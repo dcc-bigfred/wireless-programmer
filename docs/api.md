@@ -1,7 +1,7 @@
 # Socket API
 
 `wireless-programmer` exposes a Unix socket (default
-`/data/run/wireless-programmer.sock`, mode `0660`) for `bigfred` and
+`/data/run/wireless-programmer/wireless-programmer.sock`, mode `0660`) for `bigfred` and
 `bigfred-wizard` to discover and program physical throttle hardware.
 
 ## Wire format

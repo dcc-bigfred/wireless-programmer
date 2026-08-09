@@ -26,7 +26,10 @@ impl Default for Config {
     fn default() -> Self {
         let data_dir = resolve_data_dir();
         Self {
-            socket: data_dir.join("run").join("wireless-programmer.sock"),
+            socket: data_dir
+                .join("run")
+                .join("wireless-programmer")
+                .join("wireless-programmer.sock"),
             socket_mode: 0o660,
             allow_users: resolve_allow_users(),
             data_dir,

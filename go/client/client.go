@@ -12,7 +12,7 @@ import (
 
 const (
 	// DefaultSocket is the daemon socket when DATA_DIR is /data.
-	DefaultSocket  = "/data/run/wireless-programmer.sock"
+	DefaultSocket  = "/data/run/wireless-programmer/wireless-programmer.sock"
 	maxFrameBytes  = 1024 * 1024
 	defaultTimeout = 10 * time.Second
 )

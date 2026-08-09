@@ -13,7 +13,7 @@ use wp_proto::{
 use crate::error::{unexpected_body, ClientError};
 
 /// Default daemon socket when `DATA_DIR` is `/data`.
-pub const DEFAULT_SOCKET: &str = "/data/run/wireless-programmer.sock";
+pub const DEFAULT_SOCKET: &str = "/data/run/wireless-programmer/wireless-programmer.sock";
 
 /// Default per-operation timeout.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -53,11 +53,13 @@ impl Client {
         if let Ok(d) = std::env::var("BIGFRED_DATA_DIR") {
             return PathBuf::from(d)
                 .join("run")
+                .join("wireless-programmer")
                 .join("wireless-programmer.sock");
         }
         if let Ok(d) = std::env::var("DATA_DIR") {
             return PathBuf::from(d)
                 .join("run")
+                .join("wireless-programmer")
                 .join("wireless-programmer.sock");
         }
         PathBuf::from(DEFAULT_SOCKET)

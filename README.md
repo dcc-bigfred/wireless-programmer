@@ -56,7 +56,7 @@ Static musl builds (arm64 / amd64) are produced by CI; see
 
 ## Socket API
 
-Length-prefixed JSON on `$BIGFRED_DATA_DIR/run/wireless-programmer.sock`
+Length-prefixed JSON on `$BIGFRED_DATA_DIR/run/wireless-programmer/wireless-programmer.sock`
 (`DATA_DIR`, fallback `/data`), mode `0660`, peers verified with
 `SO_PEERCRED`. See `docs/api.md`.
 
@@ -67,7 +67,7 @@ subcommand it runs the daemon; the subcommands below are clients.
 
 ```bash
 # daemon (default)
-wireless-programmer --socket /data/run/wireless-programmer.sock
+wireless-programmer --socket /data/run/wireless-programmer/wireless-programmer.sock
 wireless-programmer daemon --verbose
 
 # discovery + programming
