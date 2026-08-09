@@ -143,4 +143,6 @@ stream and prints progress until the job reaches a terminal state; pass
 `--no-watch` to return the job id immediately instead.
 
 The `wp-client` crate (`crates/wp-client`) exposes the same surface as a
-synchronous, std-only Rust library for programmatic callers.
+synchronous, std-only Rust library for programmatic callers. For the full
+CLI guide see [`cli.md`](cli.md); for the Go client see
+[`go-client.md`](go-client.md).

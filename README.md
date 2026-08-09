@@ -31,7 +31,7 @@ crates/
   wp-client/           Rust client SDK (mirrors go/client)
   wireless-programmer/ bin: socket server, job registry, dispatch + CLI
 go/client/             Go client (vendored by bigfred)
-docs/                  api.md, drivers/wifred.md
+docs/                  api.md, cli.md, go-client.md, drivers/wifred.md
 ```
 
 ## Memory profile
@@ -95,8 +95,11 @@ wireless-programmer hello
 ```
 
 Every client subcommand accepts `--json` for machine-readable output and
-`--socket` to override the daemon path. The `wp-client` crate exposes the
-same surface as a library for programmatic callers.
+`--socket` to override the daemon path. See [`docs/cli.md`](docs/cli.md) for
+the full CLI guide (workflows, request/roster file formats, exit codes,
+environment variables). The `wp-client` crate exposes the same surface as a
+library for programmatic callers; the Go client is documented in
+[`docs/go-client.md`](docs/go-client.md).
 
 ## License
 
