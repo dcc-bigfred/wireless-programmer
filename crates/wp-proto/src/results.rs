@@ -204,6 +204,36 @@ pub enum JobStateWire {
     Cancelled,
 }
 
+impl JobStateWire {
+    /// Whether this state is terminal (`done`, `failed`, or `cancelled`).
+    #[must_use]
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
+    }
+
+    /// The wire name (matches the serde `camelCase` tag).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Joining => "joining",
+            Self::Probing => "probing",
+            Self::Writing => "writing",
+            Self::Verifying => "verifying",
+            Self::Restarting => "restarting",
+            Self::Done => "done",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+impl std::fmt::Display for JobStateWire {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Radio/link status.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]

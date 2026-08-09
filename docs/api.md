@@ -113,5 +113,34 @@ throttle. For WiFred this maps to `GET /flashred.html?count=N`.
 ## Permissions
 
 The socket is `0660` and peer credentials are checked via `SO_PEERCRED`
-against an allowlist (default `bigfred`, `bigfred-wizard`). Only those users
-may issue commands.
+against an allowlist (default `bigfred`, `bigfred-wizard`). Override the
+allowlist with `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login
+names, replaces the default). Only those users may issue commands.
+
+## CLI
+
+The `wireless-programmer` binary is also a client of its own daemon. With no
+subcommand it runs the daemon; the subcommands below are one-shot clients
+over the same socket. Every client subcommand accepts `--json`
+(machine-readable output) and `--socket` (override the daemon path).
+
+| Subcommand | Purpose |
+|------------|---------|
+| `scan` | Enumerate candidate devices on the radio |
+| `probe --driver --key` | Read a single candidate's device info |
+| `program --driver --key ...` | Start a programming job and stream progress to completion |
+| `identify --driver --key [--count N]` | Blink the device LED |
+| `job get\|watch\|cancel --id` | Inspect or control a running job |
+| `link-status` | Report radio/link state |
+| `hello` | Exchange version + driver capabilities |
+| `daemon [--verbose]` | Run the IPC daemon (also the default with no subcommand) |
+
+`program` builds the request either from individual flags (`--identity`,
+`--wifi-ssid`, `--wifi-psk`, `--server-host`, `--server-port`,
+`--server-automatic`, `--roster-file`) or from `--request-file` (a full
+`ProgramRequest` JSON document). After the job starts it opens a `job.watch`
+stream and prints progress until the job reaches a terminal state; pass
+`--no-watch` to return the job id immediately instead.
+
+The `wp-client` crate (`crates/wp-client`) exposes the same surface as a
+synchronous, std-only Rust library for programmatic callers.

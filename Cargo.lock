@@ -276,6 +276,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "humantime"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15cdd26707701c53297e2fa6afb323d55fbc1d0810c3aec078ae3ef0424c3c15"
+
+[[package]]
 name = "icu_collections"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1028,6 +1034,7 @@ name = "wireless-programmer"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "humantime",
  "libc",
  "log",
  "nix 0.29.0",
@@ -1038,6 +1045,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wp-client",
  "wp-core",
  "wp-drivers",
  "wp-link",
@@ -1060,6 +1068,16 @@ dependencies = [
  "netlink-sys",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "wp-client"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "wp-proto",
 ]
 
 [[package]]

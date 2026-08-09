@@ -28,12 +28,27 @@ impl Default for Config {
         Self {
             socket: data_dir.join("run").join("wireless-programmer.sock"),
             socket_mode: 0o660,
-            allow_users: vec!["bigfred".into(), "bigfred-wizard".into()],
+            allow_users: resolve_allow_users(),
             data_dir,
             version: env!("CARGO_PKG_VERSION").into(),
             commit: option_env!("WIRELESS_PROGRAMMER_GIT_COMMIT").map(Into::into),
             source_addr: "192.168.4.2:0".parse().expect("valid default source addr"),
         }
+    }
+}
+
+/// Resolve the peer allowlist. Defaults to `bigfred` and `bigfred-wizard`;
+/// override with `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login
+/// names, replaces the default).
+fn resolve_allow_users() -> Vec<String> {
+    match std::env::var("WIRELESS_PROGRAMMER_ALLOW_USERS") {
+        Ok(v) => v
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(Into::into)
+            .collect::<Vec<_>>(),
+        Err(_) => vec!["bigfred".into(), "bigfred-wizard".into()],
     }
 }
 

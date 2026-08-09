@@ -28,7 +28,8 @@ crates/
   wp-core/             DeviceDriver trait, capabilities, typed errors
   wp-link/             radio (nl80211/rtnetlink) + bounded HTTP client
   wp-drivers/          wifred/ — NewHeiko WiFred driver
-  wireless-programmer/ bin: socket server, job registry, dispatch
+  wp-client/           Rust client SDK (mirrors go/client)
+  wireless-programmer/ bin: socket server, job registry, dispatch + CLI
 go/client/             Go client (vendored by bigfred)
 docs/                  api.md, drivers/wifred.md
 ```
@@ -58,6 +59,44 @@ Static musl builds (arm64 / amd64) are produced by CI; see
 Length-prefixed JSON on `$BIGFRED_DATA_DIR/run/wireless-programmer.sock`
 (`DATA_DIR`, fallback `/data`), mode `0660`, peers verified with
 `SO_PEERCRED`. See `docs/api.md`.
+
+## CLI
+
+The same binary is both the daemon and a one-shot client of it. With no
+subcommand it runs the daemon; the subcommands below are clients.
+
+```bash
+# daemon (default)
+wireless-programmer --socket /data/run/wireless-programmer.sock
+wireless-programmer daemon --verbose
+
+# discovery + programming
+wireless-programmer scan                         # list candidates on the radio
+wireless-programmer probe --driver wifred --key AA:BB:CC:DD:EE:FF
+wireless-programmer identify --driver wifred --key AA:BB:CC:DD:EE:FF --count 5
+
+# program + stream progress to completion
+wireless-programmer program \
+  --driver wifred --key AA:BB:CC:DD:EE:FF \
+  --identity 122145 --wifi-ssid bigfred2 --wifi-psk '...' \
+  --server-host bigfred.local --server-port 12090 \
+  --roster-file roster.json
+
+# or load the full request body from a file
+wireless-programmer program --driver wifred --key AA:BB:CC:DD:EE:FF \
+  --request-file request.json
+
+# job control + link
+wireless-programmer job get --id <id>
+wireless-programmer job watch --id <id>
+wireless-programmer job cancel --id <id>
+wireless-programmer link-status
+wireless-programmer hello
+```
+
+Every client subcommand accepts `--json` for machine-readable output and
+`--socket` to override the daemon path. The `wp-client` crate exposes the
+same surface as a library for programmatic callers.
 
 ## License
 

@@ -1,0 +1,17 @@
+[package]
+name = "wp-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Rust client SDK for the wireless-programmer Unix socket API"
+
+[dependencies]
+wp-proto = { path = "../wp-proto" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[lints]
+workspace = true
