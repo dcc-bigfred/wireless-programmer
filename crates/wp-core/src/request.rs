@@ -44,6 +44,16 @@ pub struct FunctionMapping {
     pub value: u8,
 }
 
+/// BigFred login credentials for devices that authenticate with login+PIN
+/// (e.g. LongFred) rather than a 6-digit wiThrottle pairing code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BigfredCreds<'a> {
+    /// BigFred login name.
+    pub login: &'a str,
+    /// BigFred PIN (never logged by the daemon).
+    pub pin: &'a str,
+}
+
 /// The full programming request, borrowing caller-owned data.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgramRequest<'a> {
@@ -55,4 +65,8 @@ pub struct ProgramRequest<'a> {
     pub server: ThrottleServer,
     /// DCC vehicle list (capped by the driver's `max_roster_slots`).
     pub roster: Vec<RosterEntry<'a>>,
+    /// Optional BigFred login+PIN (LongFred and similar).
+    pub bigfred: Option<BigfredCreds<'a>>,
+    /// Optional roster mode string (driver-specific, e.g. `"auto"` / `"static"`).
+    pub roster_mode: Option<&'a str>,
 }

@@ -189,8 +189,8 @@ The Go structs mirror `wp-proto` 1:1 (camelCase JSON tags). The main ones:
 - `CandidateWire{Driver, Key, Label, RSSI *int32}`
 - `CandidateRef{Driver, Key}`
 - `HelloResult{Version, Commit, Drivers []DriverInfoWire}`
-- `DriverInfoWire{ID, Name, Capabilities}` / `CapabilitiesWire{MaxRosterSlots, MaxFunctionIndex, IdentityFormat, SupportsThrottleServer, Commissioning}`
-- `ProgramRequestWire{Identity, Wifi, Server, Roster []RosterEntryWire}`
+- `DriverInfoWire{ID, Name, Capabilities}` / `CapabilitiesWire{MaxRosterSlots, MaxFunctionIndex, IdentityFormat, SupportsThrottleServer, Commissioning, CommissioningNet}`
+- `ProgramRequestWire{Identity, Wifi, Server, Roster []RosterEntryWire, Bigfred, RosterMode}`
 - `WifiCredentialsWire{SSID, PSK}` / `ThrottleServerWire{Host, Port, Automatic *bool}`
 - `RosterEntryWire{Address *uint16, LongAddress *bool, Mode string, Direction *uint8, Functions []FunctionMappingWire}`
 - `DeviceInfoWire{Driver, Key, FirmwareRevision, Identity, BatteryMV *uint32, Roster}`

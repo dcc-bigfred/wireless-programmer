@@ -142,6 +142,8 @@ fn busy_maps_to_a_typed_error() {
                     automatic: None,
                 },
                 roster: Vec::new(),
+                bigfred: None,
+                roster_mode: None,
             },
         )
         .expect_err("expected busy");

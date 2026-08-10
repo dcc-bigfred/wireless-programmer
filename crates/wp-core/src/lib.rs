@@ -17,11 +17,15 @@ mod error;
 mod request;
 mod transport;
 
-pub use capabilities::{CommissioningKind, DriverCapabilities, DriverId, IdentityFormat};
+pub use capabilities::{
+    CommissioningKind, CommissioningNet, DriverCapabilities, DriverId, IdentityFormat,
+};
 pub use driver::{
     validate_common, DeviceCandidate, DeviceDriver, NoProgress, Observation, Outcome, ProgressSink,
     ScanFilters, Transport,
 };
 pub use error::{DriverError, ValidationError};
-pub use request::{FunctionMapping, ProgramRequest, RosterEntry, ThrottleServer, WifiCredentials};
+pub use request::{
+    BigfredCreds, FunctionMapping, ProgramRequest, RosterEntry, ThrottleServer, WifiCredentials,
+};
 pub use transport::{ByteStream, HttpClient};

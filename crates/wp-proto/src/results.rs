@@ -67,6 +67,23 @@ pub struct CapabilitiesWire {
     pub supports_throttle_server: bool,
     /// How the device is commissioned.
     pub commissioning: CommissioningKindWire,
+    /// Soft-AP addressing for commissioning, when not using daemon defaults.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub commissioning_net: Option<CommissioningNetWire>,
+}
+
+/// On-link Soft-AP addressing advertised by a driver.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommissioningNetWire {
+    /// Device Soft-AP address (dotted IPv4).
+    pub host: String,
+    /// HTTP port on the Soft-AP.
+    pub port: u16,
+    /// Address the hub should assign on the wireless interface.
+    pub source: String,
+    /// Prefix length for the on-link route.
+    pub prefix: u8,
 }
 
 /// Identity format constraints.

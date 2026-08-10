@@ -23,7 +23,13 @@ impl FakeHttp {
 }
 
 impl HttpClient for FakeHttp {
-    fn get(&mut self, path: &str) -> io::Result<Vec<u8>> {
+    fn request(
+        &mut self,
+        method: &str,
+        path: &str,
+        _body: Option<(&str, &[u8])>,
+    ) -> io::Result<Vec<u8>> {
+        let _ = method;
         self.requests.push(path.to_string());
         if path == "/api/getConfigXML" {
             self.xml_responses
@@ -68,6 +74,8 @@ fn make_request<'a>() -> ProgramRequest<'a> {
                 FunctionMapping { index: 1, value: 4 },
             ],
         }],
+        bigfred: None,
+        roster_mode: None,
     }
 }
 
@@ -155,6 +163,8 @@ async fn program_disables_unused_slot_with_minus_one() {
                 functions: vec![],
             },
         ],
+        bigfred: None,
+        roster_mode: None,
     };
     let mut progress = wp_core::NoProgress;
     let transport = Transport::Http(&mut fake);
@@ -209,6 +219,8 @@ async fn program_emits_long_address_flag_only_when_true() {
             direction: Some(Direction::Normal as u8),
             functions: vec![],
         }],
+        bigfred: None,
+        roster_mode: None,
     };
     let mut progress = wp_core::NoProgress;
     let transport = Transport::Http(&mut fake);
@@ -269,6 +281,8 @@ async fn program_emits_automatic_flag_when_requested() {
             direction: Some(Direction::Normal as u8),
             functions: vec![],
         }],
+        bigfred: None,
+        roster_mode: None,
     };
     let mut progress = wp_core::NoProgress;
     let transport = Transport::Http(&mut fake);
@@ -347,6 +361,8 @@ async fn validate_rejects_too_many_vehicles() {
             automatic: false,
         },
         roster,
+        bigfred: None,
+        roster_mode: None,
     };
     let err = driver.validate(&req).expect_err("should reject");
     assert!(
@@ -376,6 +392,8 @@ async fn validate_rejects_non_digit_identity() {
             automatic: false,
         },
         roster: vec![],
+        bigfred: None,
+        roster_mode: None,
     };
     let err = driver.validate(&req).expect_err("should reject");
     assert!(
@@ -408,6 +426,8 @@ async fn validate_rejects_function_index_out_of_range() {
                 value: 0,
             }],
         }],
+        bigfred: None,
+        roster_mode: None,
     };
     let err = driver.validate(&req).expect_err("should reject");
     assert!(
@@ -434,6 +454,8 @@ async fn validate_rejects_empty_ssid() {
             automatic: false,
         },
         roster: vec![],
+        bigfred: None,
+        roster_mode: None,
     };
     let err = driver.validate(&req).expect_err("should reject");
     assert!(

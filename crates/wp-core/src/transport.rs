@@ -10,13 +10,32 @@ use std::io;
 /// Implementations are expected to be bounded: a deadline, a maximum response
 /// body size, and a bounded retry count.
 pub trait HttpClient {
-    /// Issue a `GET` to `path` (path begins with `/`) and return the body.
+    /// Issue an HTTP request to `path` (path begins with `/`) and return the body.
+    ///
+    /// `body` is an optional `(content_type, bytes)` pair for methods that
+    /// carry a payload (`PUT`/`POST`). When present, the client sends
+    /// `Content-Type` and `Content-Length`.
     ///
     /// # Errors
     ///
     /// Returns [`io::Error`] on transport failure or when the response exceeds
     /// the configured bounds.
-    fn get(&mut self, path: &str) -> io::Result<Vec<u8>>;
+    fn request(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<(&str, &[u8])>,
+    ) -> io::Result<Vec<u8>>;
+
+    /// Issue a `GET` to `path` and return the body.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] on transport failure or when the response exceeds
+    /// the configured bounds.
+    fn get(&mut self, path: &str) -> io::Result<Vec<u8>> {
+        self.request("GET", path, None)
+    }
 }
 
 /// A bidirectional byte stream for serial devices.
