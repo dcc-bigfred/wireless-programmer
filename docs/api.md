@@ -117,6 +117,18 @@ against an allowlist (default `bigfred`, `bigfred-wizard`). Override the
 allowlist with `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login
 names, replaces the default). Only those users may issue commands.
 
+The allowlist is only reachable if the socket has a group the peers belong
+to: with `0660` and no group owner, a non-root client is refused with
+`EACCES` at `connect(2)`, before the daemon can inspect its credentials. So
+after binding, the daemon chowns the socket to the primary group of the first
+allowlist entry — on BigFred OS that makes it `root:bigfred 0660`, which the
+`bigfred` service can open. `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` selects a
+different login name whose primary group should own it. When the user cannot
+be resolved, or the daemon lacks the privilege to chown, it warns and leaves
+the socket owner-only rather than refusing to start; this keeps a
+non-privileged development run usable, and the warning is the signal that
+peers will not get in.
+
 ## CLI
 
 The `wireless-programmer` binary is also a client of its own daemon. With no
@@ -136,11 +148,12 @@ over the same socket. Every client subcommand accepts `--json`
 | `daemon [--verbose]` | Run the IPC daemon (also the default with no subcommand) |
 
 `program` builds the request either from individual flags (`--identity`,
-`--wifi-ssid`, `--wifi-psk`, `--server-host`, `--server-port`,
-`--server-automatic`, `--roster-file`) or from `--request-file` (a full
-`ProgramRequest` JSON document). After the job starts it opens a `job.watch`
-stream and prints progress until the job reaches a terminal state; pass
-`--no-watch` to return the job id immediately instead.
+`--wifi-ssid`, `--wifi-psk` / `--wifi-psk-file`, `--server-host`,
+`--server-port`, `--server-automatic`, `--roster-file`) or from
+`--request-file` (a full `ProgramRequest` JSON document). After the job starts
+it opens a `job.watch` stream and prints each frame as it arrives until the job
+reaches a terminal state; pass `--no-watch` to return the job id immediately
+instead.
 
 The `wp-client` crate (`crates/wp-client`) exposes the same surface as a
 synchronous, std-only Rust library for programmatic callers. For the full

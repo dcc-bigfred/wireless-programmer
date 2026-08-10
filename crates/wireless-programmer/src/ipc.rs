@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
+use nix::unistd::{chown, Gid};
 use wp_proto::{
     read_frame, write_frame, ErrorBody, Params, Request, RequestKind, Response, ResultBody,
 };
@@ -51,9 +52,9 @@ impl Server {
             std::fs::remove_file(socket)?;
         }
         let listener = UnixListener::bind(socket)?;
-        // 0660 so the allowlist group can connect.
         let perms = std::fs::Permissions::from_mode(self.cfg.socket_mode);
         std::fs::set_permissions(socket, perms)?;
+        set_socket_group(socket, &self.cfg);
         tracing::info!("listening on {}", socket.display());
 
         let inner = Arc::new(ServerInner {
@@ -232,21 +233,79 @@ impl ServerInner {
     }
 }
 
+/// Give the socket a group owner so allowlisted peers can actually open it.
+///
+/// A `0660` socket left owned by `root:root` is unreachable for every non-root
+/// peer: `connect(2)` fails with `EACCES` long before `SO_PEERCRED` is
+/// consulted, which would make [`ServerInner::peer_allowed`] dead code. This
+/// mirrors microinit, which chowns its control socket to the primary group of
+/// the first `socketAllowUsers` entry.
+///
+/// Best-effort by design: on a development machine the BigFred users do not
+/// exist and a non-root daemon cannot chown, so the socket stays owner-only.
+/// Both cases warn rather than abort, because the daemon is still usable by
+/// the user running it.
+fn set_socket_group(socket: &Path, cfg: &Config) {
+    let Some(owner) = cfg.socket_group_owner() else {
+        return;
+    };
+    let Some(gid) = primary_gid_for_user(owner) else {
+        tracing::warn!(
+            "socket group owner {owner:?} not found in /etc/passwd; \
+             {} stays owner-only and allowlisted peers will get EACCES",
+            socket.display()
+        );
+        return;
+    };
+    match chown(socket, None, Some(Gid::from_raw(gid))) {
+        Ok(()) => tracing::info!("socket group: gid {gid} (primary group of {owner:?})"),
+        Err(e) => tracing::warn!(
+            "chown {} to gid {gid} failed: {e}; allowlisted peers will get EACCES",
+            socket.display()
+        ),
+    }
+}
+
+/// One `/etc/passwd` record.
+struct PasswdEntry {
+    name: String,
+    uid: u32,
+    gid: u32,
+}
+
+/// Parse `/etc/passwd` content, skipping malformed lines rather than aborting
+/// (a single bad record must not lock every peer out).
+fn parse_passwd(content: &str) -> impl Iterator<Item = PasswdEntry> + '_ {
+    content.lines().filter_map(|line| {
+        let mut parts = line.split(':');
+        let name = parts.next()?;
+        let _pw = parts.next()?;
+        let uid = parts.next()?.parse().ok()?;
+        let gid = parts.next()?.parse().ok()?;
+        Some(PasswdEntry {
+            name: name.to_string(),
+            uid,
+            gid,
+        })
+    })
+}
+
 /// Resolve a uid to a username via `/etc/passwd`.
 fn username_for_uid(uid: u32) -> Option<String> {
-    use std::io::BufRead;
-    let f = std::fs::File::open("/etc/passwd").ok()?;
-    for line in std::io::BufReader::new(f).lines() {
-        let line = line.ok()?;
-        let mut parts = line.split(':');
-        let name = parts.next()?.to_string();
-        let _pw = parts.next()?;
-        let uid_s = parts.next()?;
-        if uid_s.parse::<u32>().ok()? == uid {
-            return Some(name);
-        }
-    }
-    None
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    let found = parse_passwd(&content)
+        .find(|e| e.uid == uid)
+        .map(|e| e.name);
+    found
+}
+
+/// Resolve a login name's primary gid via `/etc/passwd`.
+fn primary_gid_for_user(name: &str) -> Option<u32> {
+    let content = std::fs::read_to_string("/etc/passwd").ok()?;
+    let found = parse_passwd(&content)
+        .find(|e| e.name == name)
+        .map(|e| e.gid);
+    found
 }
 
 fn snapshot_to_wire(s: crate::jobs::JobSnapshot) -> wp_proto::JobSnapshot {
@@ -294,4 +353,61 @@ fn err_response(kind: RequestKind, code: &str, message: &str) -> Response {
 /// Remove the socket file on shutdown (best-effort).
 pub fn cleanup(socket: &Path) {
     let _ = std::fs::remove_file(socket);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PASSWD: &str = "\
+root:x:0:0:root:/root:/bin/sh
+daemon:x:1:1:daemon:/usr/sbin:/bin/false
+bigfred:x:1000:1001:BigFred loco-server:/home/bigfred:/bin/false
+";
+
+    #[test]
+    fn parses_name_uid_and_primary_gid() {
+        let entries: Vec<_> = parse_passwd(PASSWD).collect();
+        assert_eq!(entries.len(), 3);
+        let bigfred = entries.iter().find(|e| e.name == "bigfred").unwrap();
+        assert_eq!(bigfred.uid, 1000);
+        assert_eq!(bigfred.gid, 1001);
+    }
+
+    #[test]
+    fn skips_malformed_lines_instead_of_aborting() {
+        let content = "broken\nroot:x:0:0:root:/root:/bin/sh\nalso:bad\n";
+        let names: Vec<_> = parse_passwd(content).map(|e| e.name).collect();
+        assert_eq!(names, vec!["root".to_string()]);
+    }
+
+    #[test]
+    fn socket_group_owner_defaults_to_first_allowlist_entry() {
+        let cfg = Config {
+            allow_users: vec!["bigfred".into(), "bigfred-wizard".into()],
+            socket_group_user: None,
+            ..Config::default()
+        };
+        assert_eq!(cfg.socket_group_owner(), Some("bigfred"));
+    }
+
+    #[test]
+    fn socket_group_owner_override_wins() {
+        let cfg = Config {
+            allow_users: vec!["bigfred".into()],
+            socket_group_user: Some("operators".into()),
+            ..Config::default()
+        };
+        assert_eq!(cfg.socket_group_owner(), Some("operators"));
+    }
+
+    #[test]
+    fn socket_group_owner_is_none_without_an_allowlist() {
+        let cfg = Config {
+            allow_users: Vec::new(),
+            socket_group_user: None,
+            ..Config::default()
+        };
+        assert_eq!(cfg.socket_group_owner(), None);
+    }
 }

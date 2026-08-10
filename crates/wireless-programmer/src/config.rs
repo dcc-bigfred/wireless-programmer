@@ -12,6 +12,11 @@ pub struct Config {
     pub socket_mode: u32,
     /// Users allowed to connect (login names), matched via SO_PEERCRED.
     pub allow_users: Vec<String>,
+    /// Login name whose primary group owns the socket. `None` means "use the
+    /// first entry of `allow_users`", matching microinit's `socketAllowUsers`
+    /// model. Without a group owner a `0660` socket is unreachable for every
+    /// allowlisted peer, since DAC rejects `connect(2)` before `SO_PEERCRED`.
+    pub socket_group_user: Option<String>,
     /// Data directory (BIGFRED_DATA_DIR / DATA_DIR / /data).
     pub data_dir: PathBuf,
     /// Daemon version string.
@@ -32,11 +37,26 @@ impl Default for Config {
                 .join("wireless-programmer.sock"),
             socket_mode: 0o660,
             allow_users: resolve_allow_users(),
+            socket_group_user: std::env::var("WIRELESS_PROGRAMMER_SOCKET_GROUP_USER")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
             data_dir,
             version: env!("CARGO_PKG_VERSION").into(),
             commit: option_env!("WIRELESS_PROGRAMMER_GIT_COMMIT").map(Into::into),
             source_addr: "192.168.4.2:0".parse().expect("valid default source addr"),
         }
+    }
+}
+
+impl Config {
+    /// Login name whose primary group should own the socket: the explicit
+    /// override when set, otherwise the first allowlist entry.
+    #[must_use]
+    pub fn socket_group_owner(&self) -> Option<&str> {
+        self.socket_group_user
+            .as_deref()
+            .or_else(|| self.allow_users.first().map(String::as_str))
     }
 }
 

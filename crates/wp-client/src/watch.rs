@@ -30,7 +30,18 @@ impl WatchStream {
             .map_err(wp_proto::FrameError::from)?;
         let resp: Response = match read_frame(&mut self.stream) {
             Ok(r) => r,
-            Err(wp_proto::FrameError::UnexpectedEof { .. }) => return Ok(None),
+            // Only a zero-byte read is a clean close. A partial header or
+            // payload means the daemon died mid-frame, which must surface as an
+            // error rather than looking like an orderly end of stream.
+            Err(wp_proto::FrameError::UnexpectedEof { read: 0, .. }) => return Ok(None),
+            Err(wp_proto::FrameError::Io(e))
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Err(ClientError::WatchIdle { after: self.idle });
+            }
             Err(e) => return Err(e.into()),
         };
         if let Some(e) = resp.error {
@@ -49,16 +60,37 @@ impl WatchStream {
     /// Drain frames until the job reaches a terminal state, returning the
     /// final frame (or the last frame seen before an error / EOF).
     ///
+    /// Intermediate frames are discarded. Use [`Self::drain_with`] to observe
+    /// progress as it happens.
+    ///
     /// # Errors
     ///
     /// Propagates [`ClientError`] from the underlying reads.
-    pub fn drain(mut self) -> Result<Option<JobFrame>, ClientError> {
+    pub fn drain(self) -> Result<Option<JobFrame>, ClientError> {
+        self.drain_with(|_| {})
+    }
+
+    /// Drain frames until the job reaches a terminal state, invoking `on_frame`
+    /// for every frame — including the terminal one — as it arrives.
+    ///
+    /// Returns the final frame, or the last frame seen before the stream
+    /// closed. This is what a progress display should use: [`Self::drain`]
+    /// only ever yields the outcome, so a caller using it sees nothing at all
+    /// until the job is over.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ClientError`] from the underlying reads.
+    pub fn drain_with<F>(mut self, mut on_frame: F) -> Result<Option<JobFrame>, ClientError>
+    where
+        F: FnMut(&JobFrame),
+    {
         let mut last: Option<JobFrame> = None;
         loop {
-            let frame = match self.next_frame()? {
-                Some(f) => f,
-                None => return Ok(last),
+            let Some(frame) = self.next_frame()? else {
+                return Ok(last);
             };
+            on_frame(&frame);
             let terminal = frame.state.is_terminal();
             last = Some(frame);
             if terminal {

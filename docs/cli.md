@@ -38,6 +38,15 @@ The daemon creates the parent directory and binds the socket with mode
 `bigfred`, `bigfred-wizard`); override it with
 `WIRELESS_PROGRAMMER_ALLOW_USERS=alice,bob` (comma-separated login names).
 
+Because the mode is `0660`, the socket also needs a group owner, or a
+non-root client is refused by the filesystem before `SO_PEERCRED` is ever
+consulted. On startup the daemon chowns the socket to the primary group of
+the first allowlist entry (so `bigfred` by default); set
+`WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` to choose a different login name
+whose primary group should own it. If that user does not exist, or the
+daemon is not privileged enough to chown, it logs a warning and leaves the
+socket owner-only — useful on a development machine, fatal for peers.
+
 Every client subcommand accepts:
 
 - `--json` — emit machine-readable JSON instead of human-readable text;
@@ -84,11 +93,24 @@ wireless-programmer program \
   --key AA:BB:CC:DD:EE:01 \
   --identity 122145 \
   --wifi-ssid bigfred2 \
-  --wifi-psk 'correct-horse-battery-staple' \
+  --wifi-psk-file /run/secrets/bigfred-psk \
   --server-host bigfred.local \
   --server-port 12090 \
   --roster-file roster.json
 ```
+
+`--wifi-psk` takes the passphrase inline, which leaves it visible in
+`/proc/<pid>/cmdline` to every local user and in shell history. Prefer
+`--wifi-psk-file` (trailing newline stripped), or `--wifi-psk-file -` to read
+it from stdin:
+
+```bash
+printf '%s' "$PSK" | wireless-programmer program ... --wifi-psk-file -
+```
+
+Omit both for an open network. `--server-automatic` makes `--server-host` and
+`--server-port` optional, since the device discovers the server over mDNS; the
+port then defaults to the wiThrottle port `12090`.
 
 ### From a request file
 
@@ -147,16 +169,19 @@ function index (WiFred: 16).
 | Flag | Field | Notes |
 |------|-------|-------|
 | `--identity` | `identity` | Opaque; 6-digit BigFred pairing code for WiFred |
-| `--wifi-ssid` / `--wifi-psk` | `wifi.ssid` / `wifi.psk` | `psk` optional for open networks |
-| `--server-host` / `--server-port` | `server.host` / `server.port` | |
-| `--server-automatic` | `server.automatic` | mDNS discovery instead of a fixed host |
+| `--wifi-ssid` | `wifi.ssid` | Required |
+| `--wifi-psk` / `--wifi-psk-file` | `wifi.psk` | Mutually exclusive; omit both for an open network |
+| `--server-host` / `--server-port` | `server.host` / `server.port` | Required unless `--server-automatic` |
+| `--server-automatic` | `server.automatic` | mDNS discovery instead of a fixed host; port defaults to 12090 |
 | `--roster-file` | `roster` | JSON array of `RosterEntry` |
 
 ### Watch behaviour
 
-By default `program` streams `job.watch` frames to stderr until the job is
-terminal and prints the final frame as JSON (with `--json`). Pass
-`--no-watch` to return the job id immediately and exit:
+By default `program` follows the job's `job.watch` stream and prints every
+frame as it arrives — human-readable lines on stderr, or one compact JSON
+object per line on stdout with `--json`, so a consumer can read progress
+incrementally rather than waiting for the outcome. Pass `--no-watch` to
+return the job id immediately and exit:
 
 ```bash
 JOB=$(wireless-programmer program --driver wifred --key AA:BB:CC:DD:EE:01 \
@@ -172,14 +197,23 @@ wireless-programmer job watch   --id <id>     # stream until terminal
 wireless-programmer job cancel  --id <id>     # request cancellation
 ```
 
-`job watch` streams `JobFrame`s until the job reaches `done` / `failed` /
-`cancelled`; with `--json` each frame is printed on its own line.
+`job watch` prints `JobFrame`s as they arrive until the job reaches `done` /
+`failed` / `cancelled`; with `--json` each frame is one compact JSON object on
+its own line.
+
+If no frame arrives within the timeout, the client reports `no job progress
+frame within <timeout>` rather than a bare I/O error. Note that the daemon's
+worker loop is hardware-gated: until it drives a live radio, `job.watch`
+answers with a single snapshot frame and then goes quiet, so watching a job on
+a device-less host reaches that idle deadline by design.
 
 ## Link status
 
 ```bash
 wireless-programmer link-status
-# { "busy": false, "rfkillBlocked": false }
+# busy:            false
+# interface:       -
+# rfkill blocked:  false
 ```
 
 `busy` is true while a programming job holds the radio. `rfkillBlocked`
@@ -192,8 +226,12 @@ reflects the kernel rfkill state (the hub's udev rule unblocks it at boot).
 | `0`  | Success (job reached `done`, or a query returned) |
 | `1`  | Failure — daemon error, `failed`/`cancelled` job, or a client/CLI error |
 
-Client errors are printed to stderr as `error: <message>`. With `--json` the
-final frame is still emitted on stdout for machine parsing.
+Errors are printed to stderr as `error: <message>`. Local problems (a missing
+flag, an unreadable `--request-file`) are reported as such rather than as
+daemon failures, so `error: --wifi-ssid is required (or use --request-file)`
+means the invocation was wrong, not that the daemon misbehaved. With `--json`
+progress frames still go to stdout, one per line, so a failed job's frames
+remain machine-parseable.
 
 ## Environment variables
 
@@ -202,4 +240,5 @@ final frame is still emitted on stdout for machine parsing.
 | `BIGFRED_DATA_DIR` | Data root (default `/data`); socket is `<dir>/run/wireless-programmer/wireless-programmer.sock` |
 | `DATA_DIR` | Fallback data root |
 | `WIRELESS_PROGRAMMER_ALLOW_USERS` | Comma-separated peer allowlist (daemon only) |
+| `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` | Login name whose primary group owns the socket (daemon only; defaults to the first allowlist entry) |
 | `WIRELESS_PROGRAMMER_GIT_COMMIT` | Git commit baked into the `hello` response (build-time) |

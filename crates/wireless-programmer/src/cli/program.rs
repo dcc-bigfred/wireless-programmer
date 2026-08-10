@@ -1,16 +1,19 @@
 //! `program` subcommand: build a request, start a job, and stream progress.
 
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::Path;
 
-use wp_client::{
-    ClientError, JobStateWire, ProgramRequestWire, RosterEntryWire, ThrottleServerWire,
-    WifiCredentialsWire,
-};
+use wp_client::{ProgramRequestWire, RosterEntryWire, ThrottleServerWire, WifiCredentialsWire};
 
-use super::{build_client, ProgramArgs};
+use super::client::{outcome, print_frame};
+use super::{build_client, CliError, ProgramArgs};
+
+/// Default wiThrottle port, used when `--server-automatic` leaves the port
+/// unspecified (the device discovers the host but still stores a port).
+const DEFAULT_WITHROTTLE_PORT: u16 = 12090;
 
 /// Run the `program` subcommand.
-pub fn run(socket: &PathBuf, args: ProgramArgs) -> Result<(), ClientError> {
+pub fn run(socket: &Path, args: ProgramArgs) -> Result<(), CliError> {
     let client = build_client(socket, args.common.timeout);
     let request = build_request(&args)?;
     let candidate = wp_client::CandidateRef {
@@ -26,49 +29,17 @@ pub fn run(socket: &PathBuf, args: ProgramArgs) -> Result<(), ClientError> {
         return Ok(());
     }
 
-    let stream = client.job_watch(result.job_id.clone())?;
-    let last = stream.drain()?;
-    match last {
-        None => Err(ClientError::UnexpectedResponse(
-            "stream closed before completion".into(),
-        )),
-        Some(frame) => {
-            if args.common.json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&frame).unwrap_or_default()
-                );
-            } else {
-                eprintln!(
-                    "job {}: {:?}{}",
-                    frame.job_id,
-                    frame.state,
-                    frame
-                        .detail
-                        .as_deref()
-                        .map(|d| format!(" — {d}"))
-                        .unwrap_or_default()
-                );
-            }
-            match frame.state {
-                JobStateWire::Done => Ok(()),
-                JobStateWire::Failed | JobStateWire::Cancelled => Err(ClientError::Server {
-                    code: frame.state.to_string(),
-                    message: frame.detail.unwrap_or_default(),
-                }),
-                _ => Err(ClientError::UnexpectedResponse(
-                    "stream ended before terminal state".into(),
-                )),
-            }
-        }
-    }
+    let json = args.common.json;
+    let last = client
+        .job_watch(result.job_id)?
+        .drain_with(|frame| print_frame(frame, json))?;
+    outcome(last)
 }
 
 /// Construct the wire request from `--request-file` or the individual flags.
-fn build_request(args: &ProgramArgs) -> Result<ProgramRequestWire, ClientError> {
+fn build_request(args: &ProgramArgs) -> Result<ProgramRequestWire, CliError> {
     if let Some(path) = &args.request_file {
-        let body = read_json(path)?;
-        return Ok(body);
+        return read_json(path);
     }
 
     let roster = match &args.roster_file {
@@ -77,47 +48,80 @@ fn build_request(args: &ProgramArgs) -> Result<ProgramRequestWire, ClientError> 
     };
 
     let wifi = WifiCredentialsWire {
-        ssid: args.wifi_ssid.clone().ok_or_else(|| {
-            ClientError::UnexpectedResponse(
-                "--wifi-ssid is required (or use --request-file)".into(),
-            )
-        })?,
-        psk: args.wifi_psk.clone(),
+        ssid: required(args.wifi_ssid.clone(), "--wifi-ssid")?,
+        psk: wifi_psk(args)?,
     };
 
-    let automatic = if args.server_automatic {
-        Some(true)
+    // With mDNS discovery the device finds the host itself, so a fixed host
+    // and port stop being mandatory.
+    let server = if args.server_automatic {
+        ThrottleServerWire {
+            host: args.server_host.clone().unwrap_or_default(),
+            port: args.server_port.unwrap_or(DEFAULT_WITHROTTLE_PORT),
+            automatic: Some(true),
+        }
     } else {
-        None
-    };
-    let server = ThrottleServerWire {
-        host: args.server_host.clone().ok_or_else(|| {
-            ClientError::UnexpectedResponse(
-                "--server-host is required (or use --request-file)".into(),
-            )
-        })?,
-        port: args.server_port.ok_or_else(|| {
-            ClientError::UnexpectedResponse(
-                "--server-port is required (or use --request-file)".into(),
-            )
-        })?,
-        automatic,
+        ThrottleServerWire {
+            host: required(args.server_host.clone(), "--server-host")?,
+            port: required(args.server_port, "--server-port")?,
+            automatic: None,
+        }
     };
 
     Ok(ProgramRequestWire {
-        identity: args.identity.clone().ok_or_else(|| {
-            ClientError::UnexpectedResponse("--identity is required (or use --request-file)".into())
-        })?,
+        identity: required(args.identity.clone(), "--identity")?,
         wifi,
         server,
         roster,
     })
 }
 
+/// Resolve the PSK from `--wifi-psk`, `--wifi-psk-file`, or neither (an open
+/// network).
+fn wifi_psk(args: &ProgramArgs) -> Result<Option<String>, CliError> {
+    if let Some(psk) = &args.wifi_psk {
+        return Ok(Some(psk.clone()));
+    }
+    let Some(path) = &args.wifi_psk_file else {
+        return Ok(None);
+    };
+    let raw = if path.as_os_str() == "-" {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| CliError::File {
+                path: "<stdin>".into(),
+                message: e.to_string(),
+            })?;
+        buf
+    } else {
+        std::fs::read_to_string(path).map_err(|e| CliError::File {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?
+    };
+    let psk = raw.trim_end_matches(['\n', '\r']).to_string();
+    if psk.is_empty() {
+        return Err(CliError::Usage(
+            "PSK source is empty; omit --wifi-psk/--wifi-psk-file for an open network".into(),
+        ));
+    }
+    Ok(Some(psk))
+}
+
+/// Require a flag that only `--request-file` can substitute for.
+fn required<T>(value: Option<T>, flag: &str) -> Result<T, CliError> {
+    value.ok_or_else(|| CliError::Usage(format!("{flag} is required (or use --request-file)")))
+}
+
 /// Read a JSON file and decode it.
-fn read_json<T: serde::de::DeserializeOwned>(path: &PathBuf) -> Result<T, ClientError> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| ClientError::UnexpectedResponse(format!("read {}: {e}", path.display())))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|e| ClientError::UnexpectedResponse(format!("decode {}: {e}", path.display())))
+fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, CliError> {
+    let bytes = std::fs::read(path).map_err(|e| CliError::File {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| CliError::File {
+        path: path.display().to_string(),
+        message: e.to_string(),
+    })
 }

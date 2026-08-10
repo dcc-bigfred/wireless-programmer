@@ -58,7 +58,9 @@ Static musl builds (arm64 / amd64) are produced by CI; see
 
 Length-prefixed JSON on `$BIGFRED_DATA_DIR/run/wireless-programmer/wireless-programmer.sock`
 (`DATA_DIR`, fallback `/data`), mode `0660`, peers verified with
-`SO_PEERCRED`. See `docs/api.md`.
+`SO_PEERCRED`. The socket is chowned to the primary group of the first
+allowlist entry, without which `0660` would refuse every non-root peer before
+its credentials could be checked. See `docs/api.md`.
 
 ## CLI
 
@@ -78,7 +80,7 @@ wireless-programmer identify --driver wifred --key AA:BB:CC:DD:EE:FF --count 5
 # program + stream progress to completion
 wireless-programmer program \
   --driver wifred --key AA:BB:CC:DD:EE:FF \
-  --identity 122145 --wifi-ssid bigfred2 --wifi-psk '...' \
+  --identity 122145 --wifi-ssid bigfred2 --wifi-psk-file psk.txt \
   --server-host bigfred.local --server-port 12090 \
   --roster-file roster.json
 
@@ -94,8 +96,10 @@ wireless-programmer link-status
 wireless-programmer hello
 ```
 
-Every client subcommand accepts `--json` for machine-readable output and
-`--socket` to override the daemon path. See [`docs/cli.md`](docs/cli.md) for
+Every client subcommand accepts `--json` for machine-readable output,
+`--timeout` for a per-operation deadline, and `--socket` to override the daemon
+path. `program` and `job watch` print each progress frame as it arrives (one
+compact JSON object per line under `--json`). See [`docs/cli.md`](docs/cli.md) for
 the full CLI guide (workflows, request/roster file formats, exit codes,
 environment variables). The `wp-client` crate exposes the same surface as a
 library for programmatic callers; the Go client is documented in

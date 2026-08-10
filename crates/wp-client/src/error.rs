@@ -49,6 +49,14 @@ pub enum ClientError {
         /// Human-readable message.
         message: String,
     },
+    /// No progress frame arrived on a `job.watch` stream within the idle
+    /// deadline. Distinguished from a plain I/O error because the usual cause
+    /// is the daemon not pushing frames for this job, not a broken socket.
+    #[error("no job progress frame within {after:?}")]
+    WatchIdle {
+        /// Idle deadline that elapsed (the client timeout).
+        after: std::time::Duration,
+    },
 }
 
 impl ClientError {
