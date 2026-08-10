@@ -45,13 +45,21 @@ max 64 scan results, max 8 socket connections, max 1 MiB socket frame, max
 ## Building
 
 ```bash
+make build      # debug
+make release    # release (opt-level z, LTO, strip)
+make release-musl TARGET_MUSL=aarch64-unknown-linux-musl   # static arm64 → dist/
+```
+
+Or the usual Cargo checks:
+
+```bash
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo test --workspace --locked --profile release-assertions
 ```
 
-Static musl builds (arm64 / amd64) are produced by CI; see
+Static musl builds (arm64 / amd64) are also produced by CI; see
 `.github/workflows/ci.yml`.
 
 ## Socket API
