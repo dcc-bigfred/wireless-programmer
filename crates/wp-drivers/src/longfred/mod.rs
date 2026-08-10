@@ -25,7 +25,8 @@ pub use constants::{
     CONFIG_AP_PORT, CONFIG_HOST, CONFIG_PREFIX_LEN, CONFIG_SOURCE, MAX_FUNCTION, MAX_ROSTER_SLOTS,
     WIFI_CONFIG_SSID_PREFIX,
 };
-pub use settings::{build_settings_put, format_roster_addr};
+pub use discovery::identify;
+pub use settings::{build_settings_put, format_roster_addr, verify};
 
 use constants::{JSON_CONTENT_TYPE, PROGRAMMING_MODE_OFF_PATH, SETTINGS_PATH};
 
