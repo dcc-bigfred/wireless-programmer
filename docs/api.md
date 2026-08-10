@@ -154,7 +154,7 @@ over the same socket. Every client subcommand accepts `--json`
 | `job get\|watch\|cancel --id` | Inspect or control a running job |
 | `link-status` | Report radio/link state |
 | `hello` | Exchange version + driver capabilities |
-| `daemon [--verbose]` | Run the IPC daemon (also the default with no subcommand) |
+| `daemon [--verbose] [-i|--interface IFACE]` | Run the IPC daemon (also the default with no subcommand) |
 
 `program` builds the request either from individual flags (`--identity`,
 `--wifi-ssid`, `--wifi-psk` / `--wifi-psk-file`, `--server-host`,

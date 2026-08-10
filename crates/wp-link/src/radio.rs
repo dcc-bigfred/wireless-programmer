@@ -73,6 +73,53 @@ pub fn first_wireless_interface() -> Result<String, DriverError> {
     Err(DriverError::NoInterface)
 }
 
+/// Return `true` when `/sys/class/net/{name}/wireless` exists.
+#[must_use]
+pub fn is_wireless_interface(name: &str) -> bool {
+    !name.is_empty()
+        && Path::new("/sys/class/net")
+            .join(name)
+            .join("wireless")
+            .exists()
+}
+
+/// Resolve the wireless interface to use.
+///
+/// When `preferred` is `Some(name)`, that name must exist and be wireless.
+/// When `None`, the first wireless interface is selected (same as
+/// [`first_wireless_interface`]).
+///
+/// # Errors
+///
+/// - [`DriverError::NoInterface`] when auto-select finds nothing.
+/// - [`DriverError::Other`] when a preferred name is empty, missing, or not
+///   wireless.
+pub fn resolve_wireless_interface(preferred: Option<&str>) -> Result<String, DriverError> {
+    match preferred {
+        None => first_wireless_interface(),
+        Some(name) => {
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(DriverError::Other(
+                    "wireless interface name must not be empty".into(),
+                ));
+            }
+            let path = Path::new("/sys/class/net").join(name);
+            if !path.exists() {
+                return Err(DriverError::Other(format!(
+                    "interface {name} does not exist"
+                )));
+            }
+            if !path.join("wireless").exists() {
+                return Err(DriverError::Other(format!(
+                    "interface {name} is not wireless"
+                )));
+            }
+            Ok(name.to_string())
+        }
+    }
+}
+
 /// Resolve an interface name to its netlink ifindex via `/sys/class/net`.
 fn interface_index(name: &str) -> Result<u32, DriverError> {
     let p = Path::new("/sys/class/net").join(name).join("ifindex");
@@ -85,8 +132,9 @@ fn interface_index(name: &str) -> Result<u32, DriverError> {
 
 /// `wl-nl80211` + `rtnetlink` backed radio.
 ///
-/// Construct with [`Nl80211Radio::new`]; requires `CAP_NET_ADMIN` and
-/// `CAP_NET_RAW`. All operations are async and run on a tokio runtime.
+/// Construct with [`Nl80211Radio::new`] or [`Nl80211Radio::with_interface`];
+/// requires `CAP_NET_ADMIN` and `CAP_NET_RAW`. All operations are async and
+/// run on a tokio runtime.
 ///
 /// The nl80211 scan/connect and rtnetlink addressing paths require a real
 /// wireless adapter to exercise end-to-end; they are kept minimal here and
@@ -103,12 +151,31 @@ impl Nl80211Radio {
     ///
     /// Returns [`DriverError::NoInterface`] when no wireless interface exists.
     pub fn new() -> Result<Self, DriverError> {
-        let iface = first_wireless_interface()?;
+        Self::with_interface_opt(None)
+    }
+
+    /// Bind to a named wireless interface (e.g. `wlan0`, `wlp2s0`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError::Other`] when the name is missing or not wireless.
+    pub fn with_interface(name: &str) -> Result<Self, DriverError> {
+        Self::with_interface_opt(Some(name))
+    }
+
+    /// Bind to `preferred` when set, otherwise the first wireless interface.
+    ///
+    /// # Errors
+    ///
+    /// See [`resolve_wireless_interface`].
+    pub fn with_interface_opt(preferred: Option<&str>) -> Result<Self, DriverError> {
+        let iface = resolve_wireless_interface(preferred)?;
         let if_index = interface_index(&iface)?;
         Ok(Self { iface, if_index })
     }
 
     /// Interface name.
+    #[must_use]
     pub fn iface(&self) -> &str {
         &self.iface
     }
@@ -226,5 +293,57 @@ impl Radio for Nl80211Radio {
             let _ = handle.link().set(msg).execute().await;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_rejects_empty_preferred() {
+        let err = resolve_wireless_interface(Some("")).expect_err("empty");
+        assert!(
+            matches!(err, DriverError::Other(ref m) if m.contains("empty")),
+            "{err:?}"
+        );
+        let err = resolve_wireless_interface(Some("   ")).expect_err("whitespace");
+        assert!(
+            matches!(err, DriverError::Other(ref m) if m.contains("empty")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_missing_interface() {
+        let err = resolve_wireless_interface(Some("wlan-does-not-exist-xyz")).expect_err("missing");
+        assert!(
+            matches!(err, DriverError::Other(ref m) if m.contains("does not exist")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_rejects_non_wireless_loopback() {
+        // `lo` exists on every Linux host and is never wireless.
+        if !Path::new("/sys/class/net/lo").exists() {
+            return;
+        }
+        let err = resolve_wireless_interface(Some("lo")).expect_err("not wireless");
+        assert!(
+            matches!(err, DriverError::Other(ref m) if m.contains("not wireless")),
+            "{err:?}"
+        );
+        assert!(!is_wireless_interface("lo"));
+    }
+
+    #[test]
+    fn resolve_accepts_existing_wireless_when_present() {
+        let Ok(first) = first_wireless_interface() else {
+            return;
+        };
+        let resolved = resolve_wireless_interface(Some(&first)).expect("named wireless");
+        assert_eq!(resolved, first);
+        assert!(is_wireless_interface(&first));
     }
 }

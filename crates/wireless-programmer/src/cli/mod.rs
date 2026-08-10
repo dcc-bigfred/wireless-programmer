@@ -30,6 +30,11 @@ pub struct Cli {
     /// Verbose logging (daemon only).
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Wireless interface for the daemon (e.g. `wlan0`). Also accepted on
+    /// `daemon --interface`. Overrides `WIRELESS_PROGRAMMER_INTERFACE`.
+    #[arg(short = 'i', long = "interface", value_name = "IFACE")]
+    pub interface: Option<String>,
 }
 
 /// Top-level subcommands.

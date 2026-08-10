@@ -71,6 +71,7 @@ subcommand it runs the daemon; the subcommands below are clients.
 # daemon (default)
 wireless-programmer --socket /data/run/wireless-programmer/wireless-programmer.sock
 wireless-programmer daemon --verbose
+wireless-programmer daemon --interface wlan0
 
 # discovery + programming
 wireless-programmer scan                         # list candidates on the radio

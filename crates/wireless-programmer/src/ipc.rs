@@ -218,7 +218,11 @@ impl ServerInner {
                 kind: RequestKind::LinkStatus,
                 result: Some(ResultBody::LinkStatus(wp_proto::LinkStatusWire {
                     busy: self.jobs_is_busy(),
-                    interface: None,
+                    interface: self
+                        .cfg
+                        .interface
+                        .clone()
+                        .or_else(|| wp_link::first_wireless_interface().ok()),
                     rfkill_blocked: false,
                 })),
                 error: None,

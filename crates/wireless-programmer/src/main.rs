@@ -22,11 +22,22 @@ use cli::{Cli, Command};
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Daemon(args)) => cli::run_daemon(args, cli.socket),
+        Some(Command::Daemon(mut args)) => {
+            // Top-level `--interface` / `--verbose` apply when the
+            // subcommand did not set them itself.
+            if args.interface.is_none() {
+                args.interface = cli.interface;
+            }
+            if !args.verbose {
+                args.verbose = cli.verbose;
+            }
+            cli::run_daemon(args, cli.socket)
+        }
         Some(command) => cli::run_client(command, cli.socket),
         None => cli::run_daemon(
             cli::DaemonArgs {
                 verbose: cli.verbose,
+                interface: cli.interface,
             },
             cli.socket,
         ),
