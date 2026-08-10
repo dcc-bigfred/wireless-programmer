@@ -41,18 +41,21 @@ the response so callers can correlate requests without an explicit id.
 
 Returns the daemon version and the list of registered drivers with their
 capabilities (max roster slots, max function index, identity format,
-commissioning kind, throttle-server support).
+commissioning kind, optional Soft-AP `commissioningNet`, throttle-server
+support).
 
 ### `scan`
 
-Triggers an nl80211 scan and returns the candidates each driver claims. For
-WiFred this is every AP whose SSID starts with `wiFred-config`.
+Triggers an nl80211 scan and returns the candidates each driver claims:
+
+- WiFred: every AP whose SSID starts with `wiFred-config`
+- LongFred: every AP whose SSID starts with `longfred_prog`
 
 ### `probe`
 
 Reads a single candidate's device info over the radio (associate → HTTP GET
-`/api/getConfigXML` → parse → release). Returns firmware revision, identity,
-battery voltage and the stored roster when the device exposes them.
+→ parse → release). For WiFred this is `/api/getConfigXML`; for LongFred it
+is `/api/v1/settings` (JSON, including `device.variant` when present).
 
 ### `program`
 
@@ -65,7 +68,7 @@ request body is supplied by the caller (`bigfred`/`bigfred-wizard`), keeping
 
 ```jsonc
 {
-  "identity": "122145",            // opaque; for WiFred: 6-digit BigFred pairing code
+  "identity": "122145",            // opaque; WiFred: 6-digit pairing code; LongFred: hostname
   "wifi":   { "ssid": "bigfred2", "psk": "..." },
   "server": { "host": "bigfred.local", "port": 12090, "automatic": false },
   "roster": [
@@ -74,9 +77,15 @@ request body is supplied by the caller (`bigfred`/`bigfred-wizard`), keeping
       "direction": 0,
       "functions": [ { "index": 0, "value": 0 }, { "index": 1, "value": 4 } ]
     }
-  ]
+  ],
+  // LongFred (optional):
+  "bigfred": { "login": "ops", "pin": "1234" },
+  "rosterMode": "static"
 }
 ```
+
+See [`drivers/wifred.md`](drivers/wifred.md) and
+[`drivers/longfred.md`](drivers/longfred.md) for per-driver write sequences.
 
 The job runs through the state machine: `queued → joining → probing →
 writing → verifying → restarting → done`. Progress is observable via
@@ -145,7 +154,7 @@ over the same socket. Every client subcommand accepts `--json`
 | `job get\|watch\|cancel --id` | Inspect or control a running job |
 | `link-status` | Report radio/link state |
 | `hello` | Exchange version + driver capabilities |
-| `daemon [--verbose]` | Run the IPC daemon (also the default with no subcommand) |
+| `daemon [--verbose] [-i|--interface IFACE]` | Run the IPC daemon (also the default with no subcommand) |
 
 `program` builds the request either from individual flags (`--identity`,
 `--wifi-ssid`, `--wifi-psk` / `--wifi-psk-file`, `--server-host`,

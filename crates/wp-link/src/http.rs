@@ -1,9 +1,10 @@
-//! Bounded HTTP/1.1 GET client for device config pages.
+//! Bounded HTTP/1.1 client for device config pages.
 //!
-//! Plain HTTP only — the WiFred config AP serves on `192.168.4.1:80` with no
+//! Plain HTTP only — Soft-AP config pages serve on an on-link address with no
 //! TLS. The client binds to a caller-supplied source address (e.g.
-//! `192.168.4.2`) so requests leave the wireless interface, and enforces a
-//! deadline, a maximum response body size, and a bounded retry count.
+//! `192.168.4.2` or `192.168.0.2`) so requests leave the wireless interface,
+//! and enforces a deadline, a maximum response body size, and a bounded retry
+//! count.
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
@@ -24,7 +25,7 @@ pub const CONNECT_DEADLINE: Duration = Duration::from_secs(3);
 /// Default retry count (total attempts = retries + 1).
 pub const RETRIES: u32 = 3;
 
-/// A bounded HTTP/1.1 GET client.
+/// A bounded HTTP/1.1 client.
 pub struct BoundedHttpClient {
     /// Target host (IP literal).
     host: String,
@@ -74,8 +75,13 @@ impl BoundedHttpClient {
         self
     }
 
-    /// Issue a single GET, returning the raw body.
-    fn get_once(&mut self, path: &str) -> io::Result<Vec<u8>> {
+    /// Issue a single request, returning the raw body.
+    fn request_once(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<(&str, &[u8])>,
+    ) -> io::Result<Vec<u8>> {
         let addr: SocketAddr = format!("{}:{}", self.host, self.port)
             .parse()
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -93,12 +99,22 @@ impl BoundedHttpClient {
         stream.set_write_timeout(Some(self.deadline))?;
         let mut stream = stream;
 
-        let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n\r\n",
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n",
             host = self.host,
             port = self.port,
         );
+        if let Some((content_type, bytes)) = body {
+            request.push_str(&format!(
+                "Content-Type: {content_type}\r\nContent-Length: {}\r\n",
+                bytes.len()
+            ));
+        }
+        request.push_str("\r\n");
         stream.write_all(request.as_bytes())?;
+        if let Some((_, bytes)) = body {
+            stream.write_all(bytes)?;
+        }
         stream.flush()?;
 
         let started = Instant::now();
@@ -160,10 +176,15 @@ impl BoundedHttpClient {
 }
 
 impl HttpClient for BoundedHttpClient {
-    fn get(&mut self, path: &str) -> io::Result<Vec<u8>> {
+    fn request(
+        &mut self,
+        method: &str,
+        path: &str,
+        body: Option<(&str, &[u8])>,
+    ) -> io::Result<Vec<u8>> {
         let mut last = io::Error::other("no attempt made");
         for _ in 0..=self.retries {
-            match self.get_once(path) {
+            match self.request_once(method, path, body) {
                 Ok(body) => return Ok(body),
                 Err(e) => {
                     last = e;
@@ -264,13 +285,22 @@ mod tests {
     // A trivial in-memory HttpClient for driver tests.
     #[derive(Default)]
     pub struct FakeHttp {
-        pub requests: Vec<String>,
+        pub requests: Vec<(String, String, Option<Vec<u8>>)>,
         pub responses: std::collections::VecDeque<Vec<u8>>,
     }
 
     impl HttpClient for FakeHttp {
-        fn get(&mut self, path: &str) -> io::Result<Vec<u8>> {
-            self.requests.push(path.to_string());
+        fn request(
+            &mut self,
+            method: &str,
+            path: &str,
+            body: Option<(&str, &[u8])>,
+        ) -> io::Result<Vec<u8>> {
+            self.requests.push((
+                method.to_string(),
+                path.to_string(),
+                body.map(|(_, b)| b.to_vec()),
+            ));
             self.responses
                 .pop_front()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no fake response"))
@@ -281,11 +311,13 @@ mod tests {
     fn fake_http_records_and_replies() {
         let mut f = FakeHttp {
             requests: Vec::new(),
-            responses: [b"HTTP/1.1 200 OK\r\n\r\nok".to_vec()].into(),
+            responses: [b"ok".to_vec()].into(),
         };
         let body = <FakeHttp as HttpClient>::get(&mut f, "/index.html?x=1");
-        let _ = body;
-        assert_eq!(f.requests, vec!["/index.html?x=1".to_string()]);
+        assert_eq!(body.unwrap(), b"ok");
+        assert_eq!(f.requests.len(), 1);
+        assert_eq!(f.requests[0].0, "GET");
+        assert_eq!(f.requests[0].1, "/index.html?x=1");
         let _ = Cursor::new(b"");
     }
 }

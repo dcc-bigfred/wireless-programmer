@@ -1,6 +1,8 @@
 //! Driver capabilities and commissioning model.
 
-use wp_proto::{CapabilitiesWire, CommissioningKindWire, IdentityFormatWire};
+use std::net::Ipv4Addr;
+
+use wp_proto::{CapabilitiesWire, CommissioningKindWire, CommissioningNetWire, IdentityFormatWire};
 
 /// Stable identifier for a driver implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,6 +32,34 @@ impl From<CommissioningKind> for CommissioningKindWire {
             CommissioningKind::SoftAp => CommissioningKindWire::SoftAp,
             CommissioningKind::Lan => CommissioningKindWire::Lan,
             CommissioningKind::Serial => CommissioningKindWire::Serial,
+        }
+    }
+}
+
+/// On-link Soft-AP addressing for commissioning.
+///
+/// When present on [`DriverCapabilities`], the daemon should bind the wireless
+/// interface to `source/prefix` and talk to `host:port`. When absent, the
+/// daemon keeps its historical defaults (`192.168.4.1` / `192.168.4.2/24`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CommissioningNet {
+    /// Device Soft-AP address (e.g. `192.168.0.1`).
+    pub host: Ipv4Addr,
+    /// HTTP port on the Soft-AP (typically 80).
+    pub port: u16,
+    /// Address the hub assigns on the wireless interface (e.g. `192.168.0.2`).
+    pub source: Ipv4Addr,
+    /// Prefix length for the on-link route (typically 24).
+    pub prefix: u8,
+}
+
+impl From<CommissioningNet> for CommissioningNetWire {
+    fn from(n: CommissioningNet) -> Self {
+        CommissioningNetWire {
+            host: n.host.to_string(),
+            port: n.port,
+            source: n.source.to_string(),
+            prefix: n.prefix,
         }
     }
 }
@@ -95,6 +125,9 @@ pub struct DriverCapabilities {
     pub supports_throttle_server: bool,
     /// How the device is commissioned.
     pub commissioning: CommissioningKind,
+    /// Soft-AP addressing for commissioning, when the driver does not use the
+    /// daemon's historical `192.168.4.x` defaults.
+    pub commissioning_net: Option<CommissioningNet>,
 }
 
 impl From<DriverCapabilities> for CapabilitiesWire {
@@ -105,6 +138,7 @@ impl From<DriverCapabilities> for CapabilitiesWire {
             identity_format: c.identity_format.into(),
             supports_throttle_server: c.supports_throttle_server,
             commissioning: c.commissioning.into(),
+            commissioning_net: c.commissioning_net.map(Into::into),
         }
     }
 }

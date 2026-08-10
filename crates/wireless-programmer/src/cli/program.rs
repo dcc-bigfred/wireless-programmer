@@ -73,6 +73,8 @@ fn build_request(args: &ProgramArgs) -> Result<ProgramRequestWire, CliError> {
         wifi,
         server,
         roster,
+        bigfred: None,
+        roster_mode: None,
     })
 }
 

@@ -18,10 +18,11 @@ Commands:
   job           Inspect or control a running job
 
 Options:
-      --socket <SOCKET>  Override the daemon socket path (every subcommand)
-  -v, --verbose          Verbose logging (daemon only)
-  -h, --help              Print help
-  -V, --version           Print version
+      --socket <SOCKET>       Override the daemon socket path (every subcommand)
+  -i, --interface <IFACE>     Wireless interface for the daemon (e.g. wlan0)
+  -v, --verbose               Verbose logging (daemon only)
+  -h, --help                  Print help
+  -V, --version               Print version
 ```
 
 ## Socket resolution
@@ -46,6 +47,22 @@ the first allowlist entry (so `bigfred` by default); set
 whose primary group should own it. If that user does not exist, or the
 daemon is not privileged enough to chown, it logs a warning and leaves the
 socket owner-only — useful on a development machine, fatal for peers.
+
+## Wireless interface
+
+By default the daemon picks the first interface under `/sys/class/net` that
+has a `wireless` subdirectory. On a hub with more than one radio, pin it:
+
+```bash
+wireless-programmer --interface wlan1
+wireless-programmer daemon -i wlp2s0 --verbose
+```
+
+`--interface` / `-i` is accepted both at the top level (when starting the
+daemon with no subcommand) and on `daemon`. A missing or non-wireless name
+fails at start-up with a non-zero exit. The same choice can be set with
+`WIRELESS_PROGRAMMER_INTERFACE`; the CLI flag overrides the environment.
+`link-status` reports the configured (or auto-selected) interface name.
 
 Every client subcommand accepts:
 
@@ -241,4 +258,5 @@ remain machine-parseable.
 | `DATA_DIR` | Fallback data root |
 | `WIRELESS_PROGRAMMER_ALLOW_USERS` | Comma-separated peer allowlist (daemon only) |
 | `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` | Login name whose primary group owns the socket (daemon only; defaults to the first allowlist entry) |
+| `WIRELESS_PROGRAMMER_INTERFACE` | Wireless interface name for the daemon (e.g. `wlan0`); overridden by `--interface` |
 | `WIRELESS_PROGRAMMER_GIT_COMMIT` | Git commit baked into the `hello` response (build-time) |

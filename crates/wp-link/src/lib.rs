@@ -8,5 +8,8 @@ pub mod radio;
 pub mod rfkill;
 
 pub use http::{percent_encode, BoundedHttpClient, MAX_BODY_BYTES};
-pub use radio::{first_wireless_interface, Nl80211Radio, Radio, ScanResult};
+pub use radio::{
+    first_wireless_interface, is_wireless_interface, resolve_wireless_interface, Nl80211Radio,
+    Radio, ScanResult,
+};
 pub use rfkill::{aggregate_state, RfkillState};

@@ -38,11 +38,20 @@ type CommissioningKindWire string
 
 // CapabilitiesWire mirrors wp_proto::CapabilitiesWire.
 type CapabilitiesWire struct {
-	MaxRosterSlots         uint8                 `json:"maxRosterSlots"`
-	MaxFunctionIndex       uint8                 `json:"maxFunctionIndex"`
+	MaxRosterSlots         uint8                  `json:"maxRosterSlots"`
+	MaxFunctionIndex       uint8                  `json:"maxFunctionIndex"`
 	IdentityFormat         IdentityFormatWire     `json:"identityFormat"`
 	SupportsThrottleServer bool                   `json:"supportsThrottleServer"`
-	Commissioning          CommissioningKindWire `json:"commissioning"`
+	Commissioning          CommissioningKindWire  `json:"commissioning"`
+	CommissioningNet       *CommissioningNetWire  `json:"commissioningNet,omitempty"`
+}
+
+// CommissioningNetWire mirrors wp_proto::CommissioningNetWire.
+type CommissioningNetWire struct {
+	Host   string `json:"host"`
+	Port   uint16 `json:"port"`
+	Source string `json:"source"`
+	Prefix uint8  `json:"prefix"`
 }
 
 // DriverInfoWire mirrors wp_proto::DriverInfoWire.
@@ -103,10 +112,18 @@ type RosterEntryWire struct {
 
 // ProgramRequestWire mirrors wp_proto::ProgramRequestWire.
 type ProgramRequestWire struct {
-	Identity string               `json:"identity"`
-	Wifi      WifiCredentialsWire `json:"wifi"`
-	Server    ThrottleServerWire   `json:"server"`
-	Roster    []RosterEntryWire    `json:"roster"`
+	Identity   string               `json:"identity"`
+	Wifi       WifiCredentialsWire  `json:"wifi"`
+	Server     ThrottleServerWire   `json:"server"`
+	Roster     []RosterEntryWire    `json:"roster"`
+	Bigfred    *BigfredCredsWire    `json:"bigfred,omitempty"`
+	RosterMode string               `json:"rosterMode,omitempty"`
+}
+
+// BigfredCredsWire mirrors wp_proto::BigfredCredsWire.
+type BigfredCredsWire struct {
+	Login string `json:"login"`
+	PIN   string `json:"pin"`
 }
 
 // DeviceInfoWire mirrors wp_proto::DeviceInfoWire.

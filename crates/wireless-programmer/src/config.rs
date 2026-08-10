@@ -25,6 +25,9 @@ pub struct Config {
     pub commit: Option<String>,
     /// Source address bound on the wireless interface during programming.
     pub source_addr: SocketAddr,
+    /// Wireless interface to use (`wlan0`, `wlp2s0`, …). `None` means auto-
+    /// select the first wireless interface at radio open time.
+    pub interface: Option<String>,
 }
 
 impl Default for Config {
@@ -45,6 +48,7 @@ impl Default for Config {
             version: env!("CARGO_PKG_VERSION").into(),
             commit: option_env!("WIRELESS_PROGRAMMER_GIT_COMMIT").map(Into::into),
             source_addr: "192.168.4.2:0".parse().expect("valid default source addr"),
+            interface: resolve_interface_env(),
         }
     }
 }
@@ -73,6 +77,14 @@ fn resolve_allow_users() -> Vec<String> {
             .collect::<Vec<_>>(),
         Err(_) => vec!["bigfred".into(), "bigfred-wizard".into()],
     }
+}
+
+/// Optional wireless interface from `WIRELESS_PROGRAMMER_INTERFACE`.
+fn resolve_interface_env() -> Option<String> {
+    std::env::var("WIRELESS_PROGRAMMER_INTERFACE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// Resolve the BigFred data directory.

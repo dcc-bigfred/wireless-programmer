@@ -156,6 +156,22 @@ pub struct ProgramRequestWire {
     pub server: ThrottleServerWire,
     /// DCC vehicle list (capped by the driver's `max_roster_slots`).
     pub roster: Vec<RosterEntryWire>,
+    /// Optional BigFred login+PIN (LongFred and similar).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub bigfred: Option<BigfredCredsWire>,
+    /// Optional roster mode string (e.g. `"auto"` / `"static"` for LongFred).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub roster_mode: Option<String>,
+}
+
+/// BigFred login credentials on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BigfredCredsWire {
+    /// BigFred login name.
+    pub login: String,
+    /// BigFred PIN (never logged by the daemon).
+    pub pin: String,
 }
 
 /// WiFi credentials.
