@@ -13,6 +13,7 @@ mod config;
 mod drivers;
 mod ipc;
 mod jobs;
+mod version;
 
 use std::process::ExitCode;
 

@@ -9,129 +9,36 @@ on:
       - "v*"
   pull_request:
 
-permissions:
-  contents: read
-
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: Test
+  rust:
+    permissions:
+      contents: read
+    uses: dcc-bigfred/common/.github/workflows/rust-musl-ci.yml@v2
+    with:
+      binaries: '[{"name":"wireless-programmer","dist":"wireless-programmer-linux"}]'
+      build_env: |
+        WIRELESS_PROGRAMMER_GIT_COMMIT=${{ github.sha }}
+
+  go:
+    name: Go client
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
 
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: "1.22"
 
-      - name: Format (rust)
-        run: cargo fmt --all -- --check
-
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Test (rust)
-        run: cargo test --locked --workspace
-
-      - name: Test (release-assertions)
-        run: cargo test --locked --workspace --profile release-assertions
-
       - name: Vet (go client)
         run: cd go && go vet ./...
 
       - name: Test (go client)
         run: cd go && go test ./...
-
-  build:
-    name: Build musl (${{ matrix.name }})
-    needs: test
-    # Native runners + apt musl-tools (no musl.cc download).
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: arm64
-            runner: ubuntu-24.04-arm
-            rust_target: aarch64-unknown-linux-musl
-            dist_name: wireless-programmer-linux-arm64
-            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER
-            cc_env: CC_aarch64_unknown_linux_musl
-            ar_env: AR_aarch64_unknown_linux_musl
-          - name: amd64
-            runner: ubuntu-latest
-            rust_target: x86_64-unknown-linux-musl
-            dist_name: wireless-programmer-linux-amd64
-            linker_env: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER
-            cc_env: CC_x86_64_unknown_linux_musl
-            ar_env: AR_x86_64_unknown_linux_musl
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_target }}
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.name }}-musl
-
-      - name: Install musl toolchain (apt)
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y musl-tools musl-dev
-          musl-gcc --version
-
-      - name: Build static binary + package dist
-        run: |
-          set -euo pipefail
-          export ${{ matrix.linker_env }}=musl-gcc
-          export ${{ matrix.cc_env }}=musl-gcc
-          export ${{ matrix.ar_env }}=ar
-          export RUSTFLAGS='-C target-feature=+crt-static'
-          export WIRELESS_PROGRAMMER_GIT_COMMIT="${GITHUB_SHA}"
-
-          cargo build --release --target ${{ matrix.rust_target }} -p wireless-programmer
-
-          mkdir -p dist
-          cp -f "target/${{ matrix.rust_target }}/release/wireless-programmer" "dist/${{ matrix.dist_name }}"
-          chmod 755 "dist/${{ matrix.dist_name }}"
-
-          (
-            cd dist
-            sha256sum "${{ matrix.dist_name }}" > SHA256SUMS
-          )
-
-          file "dist/${{ matrix.dist_name }}"
-          if ldd "dist/${{ matrix.dist_name }}" 2>&1 | grep -qi 'not a dynamic\|statically linked'; then
-            echo "static binary OK: dist/${{ matrix.dist_name }}"
-          else
-            echo "warning: ldd output for dist/${{ matrix.dist_name }}:" >&2
-            ldd "dist/${{ matrix.dist_name }}" >&2 || true
-          fi
-          ls -lh "dist/${{ matrix.dist_name }}"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: binaries-${{ matrix.name }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 90

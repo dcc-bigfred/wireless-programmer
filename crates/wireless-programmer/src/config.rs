@@ -45,11 +45,34 @@ impl Default for Config {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
             data_dir,
-            version: env!("CARGO_PKG_VERSION").into(),
-            commit: option_env!("WIRELESS_PROGRAMMER_GIT_COMMIT").map(Into::into),
+            version: resolve_version(),
+            commit: resolve_commit(),
             source_addr: "192.168.4.2:0".parse().expect("valid default source addr"),
             interface: resolve_interface_env(),
         }
+    }
+}
+
+/// Prefer the release tag from `.wireless-programmer.version` when present;
+/// otherwise the Cargo package version (local / CI builds without inject).
+fn resolve_version() -> String {
+    let i = crate::version::info();
+    if i.version != "dev" {
+        i.version
+    } else {
+        env!("CARGO_PKG_VERSION").into()
+    }
+}
+
+/// Prefer the ELF tag commit when present; otherwise the build-time env.
+fn resolve_commit() -> Option<String> {
+    let i = crate::version::info();
+    if !i.tag_commit.is_empty() {
+        Some(i.tag_commit)
+    } else if i.build_commit != "unknown" {
+        Some(i.build_commit)
+    } else {
+        None
     }
 }
 

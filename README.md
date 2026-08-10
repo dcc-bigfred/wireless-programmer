@@ -59,8 +59,10 @@ cargo test --workspace --locked
 cargo test --workspace --locked --profile release-assertions
 ```
 
-Static musl builds (arm64 / amd64) are also produced by CI; see
-`.github/workflows/ci.yml`.
+Static musl builds (arm64 / amd64) are produced by CI via the org reusable
+workflow (`dcc-bigfred/common` `rust-musl-ci`); tagged releases inject
+`.wireless-programmer.version` into the ELF binaries (`rust-release`). See
+`.github/workflows/`.
 
 ## Socket API
 
