@@ -132,9 +132,7 @@ pub fn verify(settings: &Value, req: &ProgramRequest<'_>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wp_core::{
-        BigfredCreds, RosterEntry, ThrottleServer, WifiCredentials,
-    };
+    use wp_core::{BigfredCreds, RosterEntry, ThrottleServer, WifiCredentials};
 
     fn base_req<'a>() -> ProgramRequest<'a> {
         ProgramRequest {
@@ -216,5 +214,37 @@ mod tests {
         });
         let m = verify(&settings, &base_req());
         assert!(m.contains(&"wifi".into()), "{m:?}");
+    }
+
+    #[test]
+    fn verify_reports_bigfred_login_mismatch() {
+        let settings = json!({
+            "wifi": { "hostname": "pilot1", "networks": ["club-wifi"] },
+            "bigfred": { "login": "wrong" },
+            "roster": { "mode": "static", "entries": [
+                { "addr": "S3" }, { "addr": "L128" }
+            ] }
+        });
+        let m = verify(&settings, &base_req());
+        assert!(
+            m.contains(&"bigfred.login".into()),
+            "expected bigfred.login mismatch, got {m:?}"
+        );
+    }
+
+    #[test]
+    fn verify_reports_roster_mode_mismatch() {
+        let settings = json!({
+            "wifi": { "hostname": "pilot1", "networks": ["club-wifi"] },
+            "bigfred": { "login": "ops" },
+            "roster": { "mode": "auto", "entries": [
+                { "addr": "S3" }, { "addr": "L128" }
+            ] }
+        });
+        let m = verify(&settings, &base_req());
+        assert!(
+            m.contains(&"roster.mode".into()),
+            "expected roster.mode mismatch, got {m:?}"
+        );
     }
 }

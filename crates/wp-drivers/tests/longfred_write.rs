@@ -4,8 +4,8 @@ use std::io;
 
 use serde_json::json;
 use wp_core::{
-    BigfredCreds, DeviceDriver, HttpClient, ProgramRequest, RosterEntry, ThrottleServer,
-    Transport, WifiCredentials,
+    BigfredCreds, DeviceDriver, HttpClient, ProgramRequest, RosterEntry, ThrottleServer, Transport,
+    WifiCredentials,
 };
 use wp_drivers::LongFredDriver;
 

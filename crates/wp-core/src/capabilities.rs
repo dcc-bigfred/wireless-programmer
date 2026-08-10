@@ -2,9 +2,7 @@
 
 use std::net::Ipv4Addr;
 
-use wp_proto::{
-    CapabilitiesWire, CommissioningKindWire, CommissioningNetWire, IdentityFormatWire,
-};
+use wp_proto::{CapabilitiesWire, CommissioningKindWire, CommissioningNetWire, IdentityFormatWire};
 
 /// Stable identifier for a driver implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -105,11 +105,7 @@ impl DeviceDriver for LongFredDriver {
         let put = build_settings_put(req);
         let put_bytes = serde_json::to_vec(&put).map_err(|e| DriverError::Other(e.to_string()))?;
         client
-            .request(
-                "PUT",
-                SETTINGS_PATH,
-                Some((JSON_CONTENT_TYPE, &put_bytes)),
-            )
+            .request("PUT", SETTINGS_PATH, Some((JSON_CONTENT_TYPE, &put_bytes)))
             .map_err(|e| DriverError::Http(e.to_string()))?;
 
         progress.step("verify");
