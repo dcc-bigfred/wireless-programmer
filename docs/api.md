@@ -44,6 +44,10 @@ capabilities (max roster slots, max function index, identity format,
 commissioning kind, optional Soft-AP `commissioningNet`, throttle-server
 support).
 
+`version` is the release tag from the ELF section `.wireless-programmer.version`
+when the binary was published via the release workflow; otherwise the Cargo
+package version. `commit` is the matching tag/build commit when available.
+
 ### `scan`
 
 Triggers an nl80211 scan and returns the candidates each driver claims:

@@ -16,6 +16,7 @@ release:
 	$(CARGO) build --workspace --release
 
 # Static musl binary (default: aarch64). Override: make release-musl TARGET_MUSL=x86_64-unknown-linux-musl
+# Optional: WIRELESS_PROGRAMMER_GIT_COMMIT / WIRELESS_PROGRAMMER_BUILD_TIME for version metadata.
 release-musl:
 	RUSTFLAGS='-C target-feature=+crt-static' \
 		$(CARGO) build --workspace --release --target $(TARGET_MUSL)

@@ -260,3 +260,8 @@ remain machine-parseable.
 | `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` | Login name whose primary group owns the socket (daemon only; defaults to the first allowlist entry) |
 | `WIRELESS_PROGRAMMER_INTERFACE` | Wireless interface name for the daemon (e.g. `wlan0`); overridden by `--interface` |
 | `WIRELESS_PROGRAMMER_GIT_COMMIT` | Git commit baked into the `hello` response (build-time) |
+| `WIRELESS_PROGRAMMER_BUILD_TIME` | UTC build timestamp baked into version metadata (build-time, optional) |
+
+Release binaries also carry an ELF section `.wireless-programmer.version`
+(`{"version":"v…","commit":"…"}`) injected by the release workflow; `hello`
+prefers that tag over `CARGO_PKG_VERSION` when present.
