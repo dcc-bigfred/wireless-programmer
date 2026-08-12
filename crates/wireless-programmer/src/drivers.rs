@@ -3,7 +3,12 @@
 //! The driver set is closed at compile time, so dispatch uses an enum
 //! (guidelines §8.2) rather than `Box<dyn DeviceDriver>`.
 
-use wp_core::{DeviceCandidate, DeviceDriver, DriverCapabilities, Observation};
+use std::net::Ipv4Addr;
+
+use wp_core::{
+    CommissioningNet, DeviceCandidate, DeviceDriver, DriverCapabilities, DriverError, Observation,
+    Outcome, ProgressSink, ProgramRequest, Transport,
+};
 use wp_drivers::{LongFredDriver, WiFredDriver};
 
 /// All registered drivers.
@@ -29,6 +34,28 @@ impl Driver {
         match self {
             Driver::WiFred => "NewHeiko WiFred",
             Driver::LongFred => "LongFred",
+        }
+    }
+
+    /// Soft-AP addressing for commissioning.
+    pub fn commissioning_net(self) -> CommissioningNet {
+        match self {
+            Driver::WiFred => CommissioningNet {
+                host: Ipv4Addr::new(192, 168, 4, 1),
+                port: 80,
+                source: Ipv4Addr::new(192, 168, 4, 2),
+                prefix: 24,
+            },
+            Driver::LongFred => wp_drivers::longfred::commissioning_net(),
+        }
+    }
+
+    /// Parse a driver id string.
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "wifred" => Some(Driver::WiFred),
+            "longfred" => Some(Driver::LongFred),
+            _ => None,
         }
     }
 }
@@ -71,11 +98,7 @@ impl DriverRegistry {
 
     /// Find the driver owning a candidate.
     pub fn driver_for(&self, candidate: &wp_proto::CandidateRef) -> Option<Driver> {
-        match candidate.driver.as_str() {
-            "wifred" => Some(Driver::WiFred),
-            "longfred" => Some(Driver::LongFred),
-            _ => None,
-        }
+        Driver::from_id(candidate.driver.as_str())
     }
 
     /// Claim a raw observation against every driver.
@@ -83,6 +106,44 @@ impl DriverRegistry {
         self.longfred
             .identify(obs)
             .or_else(|| self.wifred.identify(obs))
+    }
+
+    /// Validate a request against the driver's capabilities.
+    pub fn validate(
+        &self,
+        driver: Driver,
+        req: &ProgramRequest<'_>,
+    ) -> Result<(), wp_core::ValidationError> {
+        match driver {
+            Driver::WiFred => self.wifred.validate(req),
+            Driver::LongFred => self.longfred.validate(req),
+        }
+    }
+
+    /// Probe a device over the supplied transport.
+    pub async fn probe(
+        &self,
+        driver: Driver,
+        transport: Transport<'_>,
+    ) -> Result<serde_json::Value, DriverError> {
+        match driver {
+            Driver::WiFred => self.wifred.probe(transport).await,
+            Driver::LongFred => self.longfred.probe(transport).await,
+        }
+    }
+
+    /// Program a device over the supplied transport.
+    pub async fn program(
+        &self,
+        driver: Driver,
+        transport: Transport<'_>,
+        req: &ProgramRequest<'_>,
+        progress: &mut dyn ProgressSink,
+    ) -> Result<Outcome, DriverError> {
+        match driver {
+            Driver::WiFred => self.wifred.program(transport, req, progress).await,
+            Driver::LongFred => self.longfred.program(transport, req, progress).await,
+        }
     }
 
     /// Borrow the WiFred driver.

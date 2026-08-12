@@ -6,7 +6,9 @@
 //! [`wp_core::HttpClient`] to the driver. On every exit path the radio is
 //! released: disconnect and address removal.
 
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 
 use wp_core::DriverError;
 
@@ -21,33 +23,33 @@ pub struct ScanResult {
     pub rssi: Option<i32>,
 }
 
+/// Boxed future returned by [`Radio`] methods (dyn-compatible).
+pub type RadioFut<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, DriverError>> + Send + 'a>>;
+
 /// The async radio contract. Implementations use nl80211 + rtnetlink.
-pub trait Radio {
+///
+/// Methods return boxed futures so the trait is dyn-compatible
+/// (`Box<dyn Radio>` in the daemon runtime).
+pub trait Radio: Send {
     /// Trigger a scan and return up to `max` results.
-    fn scan(
-        &mut self,
-        max: usize,
-    ) -> impl std::future::Future<Output = Result<Vec<ScanResult>, DriverError>>;
+    fn scan(&mut self, max: usize) -> RadioFut<'_, Vec<ScanResult>>;
 
     /// Associate to an open AP identified by SSID (and optional BSSID hint).
-    fn connect_open(
-        &mut self,
-        ssid: &str,
-        bssid: Option<[u8; 6]>,
-    ) -> impl std::future::Future<Output = Result<(), DriverError>>;
+    fn connect_open(&mut self, ssid: &str, bssid: Option<[u8; 6]>) -> RadioFut<'_, ()>;
 
     /// Assign `addr/prefix_len` to the wireless interface (on-link route only).
     fn set_address(
         &mut self,
         addr: std::net::Ipv4Addr,
         prefix_len: u8,
-    ) -> impl std::future::Future<Output = Result<(), DriverError>>;
+    ) -> RadioFut<'_, ()>;
 
     /// Bring the link up.
-    fn link_up(&mut self) -> impl std::future::Future<Output = Result<(), DriverError>>;
+    fn link_up(&mut self) -> RadioFut<'_, ()>;
 
     /// Disconnect and remove the assigned address, releasing the radio.
-    fn release(&mut self) -> impl std::future::Future<Output = Result<(), DriverError>>;
+    fn release(&mut self) -> RadioFut<'_, ()>;
 }
 
 /// Select the first wireless interface by scanning `/sys/class/net/*/wireless`.
@@ -130,15 +132,83 @@ fn interface_index(name: &str) -> Result<u32, DriverError> {
         .map_err(|e| DriverError::Other(format!("bad ifindex for {name}: {e}")))
 }
 
+/// Format a MAC as lowercase colon-separated hex.
+fn format_bssid(mac: &[u8; 6]) -> String {
+    format!(
+        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+/// Extract an SSID from raw 802.11 information elements (TLV: id, len, data).
+fn ssid_from_ies(ies: &[u8]) -> Option<String> {
+    let mut i = 0;
+    while i + 1 < ies.len() {
+        let id = ies[i];
+        let len = usize::from(ies[i + 1]);
+        if i + 2 + len > ies.len() {
+            break;
+        }
+        if id == 0 {
+            let bytes = &ies[i + 2..i + 2 + len];
+            if bytes.is_empty() {
+                return None;
+            }
+            return Some(String::from_utf8_lossy(bytes).into_owned());
+        }
+        i += 2 + len;
+    }
+    None
+}
+
+/// Parse one BSS info vector into a [`ScanResult`].
+pub fn parse_bss_infos(bss: &[wl_nl80211::Nl80211BssInfo]) -> Option<ScanResult> {
+    use wl_nl80211::Nl80211BssInfo;
+
+    let mut ssid = None;
+    let mut bssid = None;
+    let mut rssi = None;
+
+    for info in bss {
+        match info {
+            Nl80211BssInfo::Bssid(mac) => {
+                bssid = Some(format_bssid(mac));
+            }
+            Nl80211BssInfo::SignalMbm(mbm) => {
+                rssi = Some(mbm / 100);
+            }
+            Nl80211BssInfo::RawInformationElements(ies)
+            | Nl80211BssInfo::RawBeaconInformationElements(ies)
+            | Nl80211BssInfo::RawProbeResponseInformationElements(ies)
+                if ssid.is_none() =>
+            {
+                ssid = ssid_from_ies(ies);
+            }
+            _ => {}
+        }
+    }
+
+    if ssid.is_none() && bssid.is_none() {
+        return None;
+    }
+    Some(ScanResult { ssid, bssid, rssi })
+}
+
+/// Parse a dump message's attributes into a [`ScanResult`].
+pub fn parse_scan_attrs(attrs: &[wl_nl80211::Nl80211Attr]) -> Option<ScanResult> {
+    for attr in attrs {
+        if let wl_nl80211::Nl80211Attr::Bss(bss) = attr {
+            return parse_bss_infos(bss);
+        }
+    }
+    None
+}
+
 /// `wl-nl80211` + `rtnetlink` backed radio.
 ///
 /// Construct with [`Nl80211Radio::new`] or [`Nl80211Radio::with_interface`];
 /// requires `CAP_NET_ADMIN` and `CAP_NET_RAW`. All operations are async and
 /// run on a tokio runtime.
-///
-/// The nl80211 scan/connect and rtnetlink addressing paths require a real
-/// wireless adapter to exercise end-to-end; they are kept minimal here and
-/// documented for hardware validation.
 pub struct Nl80211Radio {
     iface: String,
     if_index: u32,
@@ -182,123 +252,139 @@ impl Nl80211Radio {
 }
 
 impl Radio for Nl80211Radio {
-    async fn scan(&mut self, max: usize) -> Result<Vec<ScanResult>, DriverError> {
-        use futures::stream::TryStreamExt;
-        use wl_nl80211::Nl80211Scan;
+    fn scan(&mut self, max: usize) -> RadioFut<'_, Vec<ScanResult>> {
+        let if_index = self.if_index;
+        Box::pin(async move {
+            use futures::stream::TryStreamExt;
+            use wl_nl80211::Nl80211Scan;
 
-        let (connection, handle, _) = wl_nl80211::new_connection()
-            .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
-        tokio::spawn(connection);
+            let (connection, handle, _) = wl_nl80211::new_connection()
+                .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
+            tokio::spawn(connection);
 
-        // Trigger a passive scan, then dump the cached results.
-        let attrs = Nl80211Scan::new(self.if_index).passive(true).build();
-        let mut trigger = handle.scan().trigger(attrs).execute().await;
-        while trigger.try_next().await.is_ok() {
-            // drain acks
-        }
-        // Give the kernel a moment to populate the cache.
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-
-        let mut dump = handle.scan().dump(self.if_index).execute().await;
-        let results = Vec::new();
-        while let Ok(_msg) = dump.try_next().await {
-            if results.len() >= max {
-                break;
+            // Trigger a passive scan, then dump the cached results.
+            let attrs = Nl80211Scan::new(if_index).passive(true).build();
+            let mut trigger = handle.scan().trigger(attrs).execute().await;
+            while trigger.try_next().await.is_ok() {
+                // drain acks
             }
-        }
-        Ok(results)
+            // Give the kernel a moment to populate the cache.
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            let mut dump = handle.scan().dump(if_index).execute().await;
+            let mut results = Vec::new();
+            while let Ok(Some(msg)) = dump.try_next().await {
+                if results.len() >= max {
+                    break;
+                }
+                if let Some(r) = parse_scan_attrs(&msg.payload.attributes) {
+                    results.push(r);
+                }
+            }
+            Ok(results)
+        })
     }
 
-    async fn connect_open(
-        &mut self,
-        ssid: &str,
-        bssid: Option<[u8; 6]>,
-    ) -> Result<(), DriverError> {
-        use futures::stream::TryStreamExt;
-        use wl_nl80211::{Nl80211AuthType, Nl80211Connect};
+    fn connect_open(&mut self, ssid: &str, bssid: Option<[u8; 6]>) -> RadioFut<'_, ()> {
+        let if_index = self.if_index;
+        let ssid = ssid.to_string();
+        Box::pin(async move {
+            use futures::stream::TryStreamExt;
+            use wl_nl80211::{Nl80211AuthType, Nl80211Connect};
 
-        let (connection, handle, _) = wl_nl80211::new_connection()
-            .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
-        tokio::spawn(connection);
+            let (connection, handle, _) = wl_nl80211::new_connection()
+                .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
+            tokio::spawn(connection);
 
-        let mut builder = Nl80211Connect::new(self.if_index)
-            .ssid(ssid)
-            .auth_type(Nl80211AuthType::OpenSystem)
-            .privacy(false);
-        if let Some(mac) = bssid {
-            builder = builder.mac(mac);
-        }
-        let attrs = builder.build();
+            let mut builder = Nl80211Connect::new(if_index)
+                .ssid(&ssid)
+                .auth_type(Nl80211AuthType::OpenSystem)
+                .privacy(false);
+            if let Some(mac) = bssid {
+                builder = builder.mac(mac);
+            }
+            let attrs = builder.build();
 
-        let mut stream = handle.connection().connect(attrs).execute().await;
-        while stream.try_next().await.is_ok() {
-            // drain acks
-        }
-        Ok(())
+            let mut stream = handle.connection().connect(attrs).execute().await;
+            while stream.try_next().await.is_ok() {
+                // drain acks
+            }
+            Ok(())
+        })
     }
 
-    async fn set_address(
+    fn set_address(
         &mut self,
         addr: std::net::Ipv4Addr,
         prefix_len: u8,
-    ) -> Result<(), DriverError> {
-        use rtnetlink::new_connection;
+    ) -> RadioFut<'_, ()> {
+        let if_index = self.if_index;
+        Box::pin(async move {
+            use rtnetlink::new_connection;
 
-        let (connection, handle, _) = new_connection()
-            .map_err(|e| DriverError::Other(format!("rtnetlink connection: {e}")))?;
-        tokio::spawn(connection);
+            let (connection, handle, _) = new_connection()
+                .map_err(|e| DriverError::Other(format!("rtnetlink connection: {e}")))?;
+            tokio::spawn(connection);
 
-        handle
-            .address()
-            .add(self.if_index, std::net::IpAddr::V4(addr), prefix_len)
-            .execute()
-            .await
-            .map_err(|e| DriverError::Other(format!("address add: {e}")))
+            handle
+                .address()
+                .add(if_index, std::net::IpAddr::V4(addr), prefix_len)
+                .execute()
+                .await
+                .map_err(|e| DriverError::Other(format!("address add: {e}")))
+        })
     }
 
-    async fn link_up(&mut self) -> Result<(), DriverError> {
-        use rtnetlink::{new_connection, LinkUnspec};
+    fn link_up(&mut self) -> RadioFut<'_, ()> {
+        let if_index = self.if_index;
+        Box::pin(async move {
+            use rtnetlink::{new_connection, LinkUnspec};
 
-        let (connection, handle, _) = new_connection()
-            .map_err(|e| DriverError::Other(format!("rtnetlink connection: {e}")))?;
-        tokio::spawn(connection);
-        let msg = LinkUnspec::new_with_index(self.if_index).up().build();
-        handle
-            .link()
-            .set(msg)
-            .execute()
-            .await
-            .map_err(|e| DriverError::Other(format!("link up: {e}")))
+            let (connection, handle, _) = new_connection()
+                .map_err(|e| DriverError::Other(format!("rtnetlink connection: {e}")))?;
+            tokio::spawn(connection);
+            let msg = LinkUnspec::new_with_index(if_index).up().build();
+            handle
+                .link()
+                .set(msg)
+                .execute()
+                .await
+                .map_err(|e| DriverError::Other(format!("link up: {e}")))
+        })
     }
 
-    async fn release(&mut self) -> Result<(), DriverError> {
-        use futures::stream::TryStreamExt;
-        use wl_nl80211::Nl80211Disconnect;
+    fn release(&mut self) -> RadioFut<'_, ()> {
+        let if_index = self.if_index;
+        Box::pin(async move {
+            use futures::stream::TryStreamExt;
+            use wl_nl80211::Nl80211Disconnect;
 
-        // Best-effort disconnect; report only hard failures.
-        if let Ok((connection, handle, _)) = wl_nl80211::new_connection() {
-            tokio::spawn(connection);
-            let attrs = Nl80211Disconnect::new(self.if_index).build();
-            let mut stream = handle.connection().disconnect(attrs).execute().await;
-            let _ = stream.try_next().await;
-        }
+            // Best-effort disconnect; report only hard failures.
+            if let Ok((connection, handle, _)) = wl_nl80211::new_connection() {
+                tokio::spawn(connection);
+                let attrs = Nl80211Disconnect::new(if_index).build();
+                let mut stream = handle.connection().disconnect(attrs).execute().await;
+                let _ = stream.try_next().await;
+            }
 
-        // Best-effort link down; the interface staying up is harmless (no
-        // default route, no address left after the kernel clears it on
-        // disconnect), but bringing it down is tidy.
-        use rtnetlink::{new_connection, LinkUnspec};
-        if let Ok((connection, handle, _)) = new_connection() {
-            tokio::spawn(connection);
-            let msg = LinkUnspec::new_with_index(self.if_index).down().build();
-            let _ = handle.link().set(msg).execute().await;
-        }
-        Ok(())
+            // Best-effort link down; the interface staying up is harmless (no
+            // default route, no address left after the kernel clears it on
+            // disconnect), but bringing it down is tidy.
+            use rtnetlink::{new_connection, LinkUnspec};
+            if let Ok((connection, handle, _)) = new_connection() {
+                tokio::spawn(connection);
+                let msg = LinkUnspec::new_with_index(if_index).down().build();
+                let _ = handle.link().set(msg).execute().await;
+            }
+            Ok(())
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wl_nl80211::Nl80211BssInfo;
 
     #[test]
     fn resolve_rejects_empty_preferred() {
@@ -345,5 +431,44 @@ mod tests {
         let resolved = resolve_wireless_interface(Some(&first)).expect("named wireless");
         assert_eq!(resolved, first);
         assert!(is_wireless_interface(&first));
+    }
+
+    #[test]
+    fn ssid_from_ies_reads_test_wifi() {
+        // IE: id=0, len=9, "Test-WIFI"
+        let ies = [
+            0u8, 9, b'T', b'e', b's', b't', b'-', b'W', b'I', b'F', b'I', 1, 8, 130, 132, 139,
+            150, 12, 18, 24, 36,
+        ];
+        assert_eq!(ssid_from_ies(&ies).as_deref(), Some("Test-WIFI"));
+    }
+
+    #[test]
+    fn parse_bss_infos_from_fixture() {
+        let bss = vec![
+            Nl80211BssInfo::Bssid([214, 178, 106, 168, 188, 177]),
+            Nl80211BssInfo::RawInformationElements(vec![
+                0, 9, 84, 101, 115, 116, 45, 87, 73, 70, 73, 1, 8, 130, 132, 139, 150, 12, 18, 24,
+                36,
+            ]),
+            Nl80211BssInfo::SignalMbm(-3000),
+        ];
+        let r = parse_bss_infos(&bss).expect("parsed");
+        assert_eq!(r.ssid.as_deref(), Some("Test-WIFI"));
+        assert_eq!(r.bssid.as_deref(), Some("d6:b2:6a:a8:bc:b1"));
+        assert_eq!(r.rssi, Some(-30));
+    }
+
+    #[test]
+    fn parse_scan_attrs_finds_bss() {
+        let attrs = vec![wl_nl80211::Nl80211Attr::Bss(vec![
+            Nl80211BssInfo::Bssid([0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff]),
+            Nl80211BssInfo::RawInformationElements(vec![0, 4, b't', b'e', b's', b't']),
+            Nl80211BssInfo::SignalMbm(-5500),
+        ])];
+        let r = parse_scan_attrs(&attrs).expect("parsed");
+        assert_eq!(r.ssid.as_deref(), Some("test"));
+        assert_eq!(r.bssid.as_deref(), Some("aa:bb:cc:dd:ee:ff"));
+        assert_eq!(r.rssi, Some(-55));
     }
 }

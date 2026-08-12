@@ -9,7 +9,7 @@ use std::io;
 ///
 /// Implementations are expected to be bounded: a deadline, a maximum response
 /// body size, and a bounded retry count.
-pub trait HttpClient {
+pub trait HttpClient: Send {
     /// Issue an HTTP request to `path` (path begins with `/`) and return the body.
     ///
     /// `body` is an optional `(content_type, bytes)` pair for methods that
@@ -39,7 +39,7 @@ pub trait HttpClient {
 }
 
 /// A bidirectional byte stream for serial devices.
-pub trait ByteStream {
+pub trait ByteStream: Send {
     /// Read up to `buf.len()` bytes into `buf`.
     ///
     /// # Errors

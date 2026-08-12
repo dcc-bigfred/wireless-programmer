@@ -1048,6 +1048,7 @@ dependencies = [
  "wp-client",
  "wp-core",
  "wp-drivers",
+ "wp-fake",
  "wp-link",
  "wp-proto",
 ]
@@ -1102,6 +1103,21 @@ dependencies = [
  "tokio",
  "url",
  "wp-core",
+ "wp-link",
+]
+
+[[package]]
+name = "wp-fake"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "parking_lot",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "tokio",
+ "wp-core",
+ "wp-drivers",
  "wp-link",
 ]
 

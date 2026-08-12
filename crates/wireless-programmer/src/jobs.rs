@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use wp_core::DriverError;
+use wp_proto::ProgramRequestWire;
 
 /// Overall job deadline.
 pub const JOB_DEADLINE: Duration = Duration::from_secs(120);
@@ -107,6 +108,7 @@ struct JobRecord {
     snapshot: JobSnapshot,
     frames: Vec<JobFrame>,
     cancel: bool,
+    request: Option<ProgramRequestWire>,
 }
 
 /// A shared job registry. Only one job may be active at a time.
@@ -132,6 +134,16 @@ impl JobRegistry {
 
     /// Try to start a job. Returns [`JobError::Busy`] when one is active.
     pub fn start(&self, driver: &str, key: &str) -> Result<JobId, JobError> {
+        self.submit(driver, key, None)
+    }
+
+    /// Start a job and store the programming request for the worker.
+    pub fn submit(
+        &self,
+        driver: &str,
+        key: &str,
+        request: Option<ProgramRequestWire>,
+    ) -> Result<JobId, JobError> {
         let mut inner = self.inner.lock();
         if let Some(active) = inner.active.as_ref() {
             return Err(JobError::Busy(active.clone()));
@@ -150,10 +162,25 @@ impl JobRegistry {
             },
             frames: Vec::new(),
             cancel: false,
+            request,
         };
         inner.active = Some(id.clone());
         inner.jobs.insert(id.clone(), rec);
         Ok(JobId(id))
+    }
+
+    /// Take the stored programming request (worker pulls once).
+    pub fn take_request(&self, id: &JobId) -> Option<ProgramRequestWire> {
+        self.inner
+            .lock()
+            .jobs
+            .get_mut(&id.0)
+            .and_then(|r| r.request.take())
+    }
+
+    /// Whether a non-terminal job currently holds the radio.
+    pub fn is_busy(&self) -> bool {
+        self.inner.lock().active.is_some()
     }
 
     /// Push a state transition + frame for a job.
@@ -184,11 +211,27 @@ impl JobRegistry {
         }
     }
 
-    /// Mark a job cancelled (caller request).
+    /// Mark a job cancelled. Transitions to [`JobState::Cancelled`] when the
+    /// job is still non-terminal (frees the radio). The worker also observes
+    /// the cancel flag via [`Self::is_cancelled`].
     pub fn cancel(&self, id: &JobId) {
         let mut inner = self.inner.lock();
-        if let Some(rec) = inner.jobs.get_mut(&id.0) {
-            rec.cancel = true;
+        let Some(rec) = inner.jobs.get_mut(&id.0) else {
+            return;
+        };
+        rec.cancel = true;
+        if !rec.snapshot.state.is_terminal() {
+            rec.snapshot.state = JobState::Cancelled;
+            rec.frames.push(JobFrame {
+                id: id.clone(),
+                state: JobState::Cancelled,
+                step: None,
+                progress: None,
+                detail: Some("cancelled by caller".into()),
+            });
+            if inner.active.as_deref() == Some(id.0.as_str()) {
+                inner.active = None;
+            }
         }
     }
 

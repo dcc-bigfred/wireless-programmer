@@ -27,12 +27,28 @@ crates/
   wp-proto/            socket wire types + 4-byte-LE length+JSON framing
   wp-core/             DeviceDriver trait, capabilities, typed errors
   wp-link/             radio (nl80211/rtnetlink) + bounded HTTP client
-  wp-drivers/          wifred/ — NewHeiko WiFred driver
+  wp-drivers/          wifred/, longfred/ — Soft-AP programming drivers
+  wp-fake/             FakeRadio + Soft-AP HTTP mocks (dev / tests)
   wp-client/           Rust client SDK (mirrors go/client)
   wireless-programmer/ bin: socket server, job registry, dispatch + CLI
 go/client/             Go client (vendored by bigfred)
-docs/                  api.md, cli.md, go-client.md, drivers/wifred.md
+docs/                  api.md, cli.md, go-client.md, drivers/
 ```
+
+## Fake mode (no WiFi hardware)
+
+```bash
+# Full daemon with fake radio + Soft-AP HTTP mock (one candidate per driver)
+wireless-programmer daemon --interface fake --verbose
+# Optional: --fake-webserver-port 8070 (default) or 0 for ephemeral
+
+# Standalone Soft-AP HTTP mock only (no IPC / radio)
+wireless-programmer fake --driver wifred --bind 127.0.0.1:8070
+wireless-programmer fake --driver longfred
+```
+
+With `--interface fake`, scan always returns one WiFred and one LongFred
+candidate; programming talks to an in-process HTTP mock on `127.0.0.1`.
 
 ## Memory profile
 
@@ -46,9 +62,13 @@ max 64 scan results, max 8 socket connections, max 1 MiB socket frame, max
 
 ```bash
 make build      # debug
+make dev        # build + run daemon in foreground (`--verbose`)
 make release    # release (opt-level z, LTO, strip)
 make release-musl TARGET_MUSL=aarch64-unknown-linux-musl   # static arm64 → dist/
 ```
+
+`make dev` accepts `INTERFACE=wlan0` and the usual env vars (`DATA_DIR`,
+`WIRELESS_PROGRAMMER_ALLOW_USERS`, …).
 
 Or the usual Cargo checks:
 
@@ -67,10 +87,9 @@ workflow (`dcc-bigfred/common` `rust-musl-ci`); tagged releases inject
 ## Socket API
 
 Length-prefixed JSON on `$BIGFRED_DATA_DIR/run/wireless-programmer/wireless-programmer.sock`
-(`DATA_DIR`, fallback `/data`), mode `0660`, peers verified with
-`SO_PEERCRED`. The socket is chowned to the primary group of the first
-allowlist entry, without which `0660` would refuse every non-root peer before
-its credentials could be checked. See `docs/api.md`.
+(`DATA_DIR`, fallback `/data`). Peer auth is **off by default** (socket
+`0666`); enable with `--require-auth` / `WIRELESS_PROGRAMMER_REQUIRE_AUTH`
+for `0660` + `SO_PEERCRED` allowlist. See `docs/api.md`.
 
 ## CLI
 

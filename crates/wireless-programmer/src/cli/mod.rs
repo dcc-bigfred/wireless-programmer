@@ -2,6 +2,7 @@
 
 mod client;
 mod daemon;
+mod fake;
 mod program;
 
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ use clap::{Parser, Subcommand};
 use wp_client::ClientError;
 
 pub use daemon::{run_daemon, DaemonArgs};
+pub use fake::{run_fake, FakeArgs};
 
 /// Command-line interface.
 #[derive(Debug, Parser)]
@@ -35,6 +37,15 @@ pub struct Cli {
     /// `daemon --interface`. Overrides `WIRELESS_PROGRAMMER_INTERFACE`.
     #[arg(short = 'i', long = "interface", value_name = "IFACE")]
     pub interface: Option<String>,
+
+    /// Require SO_PEERCRED peer authentication (daemon only). Also accepted
+    /// on `daemon --require-auth`.
+    #[arg(long = "require-auth")]
+    pub require_auth: bool,
+
+    /// Comma-separated allowlist when peer auth is on (daemon only).
+    #[arg(long = "allow-users", value_name = "USERS")]
+    pub allow_users: Option<String>,
 }
 
 /// Top-level subcommands.
@@ -56,6 +67,8 @@ pub enum Command {
     Hello(CommonArgs),
     /// Inspect or control a running job.
     Job(JobArgs),
+    /// Run a standalone Soft-AP HTTP mock for one driver (no daemon).
+    Fake(FakeArgs),
 }
 
 /// Shared client-side flags.

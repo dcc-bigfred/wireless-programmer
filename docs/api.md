@@ -125,22 +125,27 @@ throttle. For WiFred this maps to `GET /flashred.html?count=N`.
 
 ## Permissions
 
-The socket is `0660` and peer credentials are checked via `SO_PEERCRED`
-against an allowlist (default `bigfred`, `bigfred-wizard`). Override the
-allowlist with `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login
-names, replaces the default). Only those users may issue commands.
+Peer authentication is **off by default**. The socket is then `0666` and any
+local process may connect — convenient for development (`make dev`).
 
-The allowlist is only reachable if the socket has a group the peers belong
-to: with `0660` and no group owner, a non-root client is refused with
-`EACCES` at `connect(2)`, before the daemon can inspect its credentials. So
-after binding, the daemon chowns the socket to the primary group of the first
-allowlist entry — on BigFred OS that makes it `root:bigfred 0660`, which the
-`bigfred` service can open. `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` selects a
-different login name whose primary group should own it. When the user cannot
-be resolved, or the daemon lacks the privilege to chown, it warns and leaves
-the socket owner-only rather than refusing to start; this keeps a
-non-privileged development run usable, and the warning is the signal that
-peers will not get in.
+Enable authentication with `--require-auth` or
+`WIRELESS_PROGRAMMER_REQUIRE_AUTH=1`. Then the socket is `0660` and peer
+credentials are checked via `SO_PEERCRED` against an allowlist (default
+`bigfred`, `bigfred-wizard`). Override the allowlist with `--allow-users`
+or `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login names). Only
+those users may issue commands.
+
+With auth on, the allowlist is only reachable if the socket has a group the
+peers belong to: with `0660` and no group owner, a non-root client is refused
+with `EACCES` at `connect(2)`, before the daemon can inspect its credentials.
+So after binding, the daemon chowns the socket to the primary group of the
+first allowlist entry — on BigFred OS that makes it `root:bigfred 0660`, which
+the `bigfred` service can open. `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER`
+selects a different login name whose primary group should own it. When the
+user cannot be resolved, or the daemon lacks the privilege to chown, it
+warns and leaves the socket owner-only rather than refusing to start; this
+keeps a non-privileged development run usable, and the warning is the signal
+that peers will not get in.
 
 ## CLI
 

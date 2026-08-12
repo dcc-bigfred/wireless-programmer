@@ -57,7 +57,7 @@ pub struct ScanFilters {
 }
 
 /// Sink for progress updates during a programming job.
-pub trait ProgressSink {
+pub trait ProgressSink: Send {
     /// Report a step transition.
     fn step(&mut self, step: &str);
     /// Report progress 0..=100, when meaningful.

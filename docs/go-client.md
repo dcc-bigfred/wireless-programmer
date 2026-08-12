@@ -46,12 +46,13 @@ c := &client.Client{
 `Socket` defaults to `DefaultSocket` when empty; `Timeout` defaults to 10s
 when zero. Override `Dial` in tests to point at an in-memory listener.
 
-The socket is mode `0660`, owned by the primary group of the daemon's first
-allowlisted user (`bigfred` by default), so the calling process must be that
-user or in that group. A `permission denied` from `Dial` means the caller is
-outside the group — the daemon's `SO_PEERCRED` allowlist never gets a chance to
-run, so widening it does not help. See the permissions section of
-[`api.md`](api.md).
+The socket is mode `0666` when peer auth is off (the default). With
+`--require-auth` it is `0660`, owned by the primary group of the daemon's
+first allowlisted user (`bigfred` by default), so the calling process must
+be that user or in that group. A `permission denied` from `Dial` means the
+caller is outside the group — the daemon's `SO_PEERCRED` allowlist never
+gets a chance to run, so widening it does not help. See the permissions
+section of [`api.md`](api.md).
 
 ## Methods
 

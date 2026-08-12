@@ -11,12 +11,17 @@ description = "Daemon that discovers and programs physical throttle hardware for
 name = "wireless-programmer"
 path = "src/main.rs"
 
+[lib]
+name = "wireless_programmer"
+path = "src/lib.rs"
+
 [dependencies]
 wp-proto = { path = "../wp-proto" }
 wp-core = { path = "../wp-core" }
 wp-link = { path = "../wp-link" }
 wp-drivers = { path = "../wp-drivers" }
 wp-client = { path = "../wp-client" }
+wp-fake = { path = "../wp-fake" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }

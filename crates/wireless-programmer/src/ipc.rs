@@ -1,9 +1,10 @@
-//! Unix socket server: length-prefixed JSON, SO_PEERCRED, 0660.
+//! Unix socket server: length-prefixed JSON, optional SO_PEERCRED, 0660/0666.
 //!
 //! Wire format matches `microinit` (see `microinit/src/ipc.rs`): a 4-byte LE
 //! length prefix followed by JSON, with each message `type`-tagged.
-//! Permissions follow the microinit `socketAllowUsers` model: the socket is
-//! `0660` and peer credentials are checked against an allowlist.
+//! Peer authentication is **off by default**. When enabled (`--require-auth`
+//! / `WIRELESS_PROGRAMMER_REQUIRE_AUTH`), the socket is `0660` and peers are
+//! checked against an allowlist via `SO_PEERCRED`.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -18,24 +19,18 @@ use wp_proto::{
 };
 
 use crate::config::Config;
-use crate::drivers::DriverRegistry;
-use crate::jobs::{JobRegistry, JobState};
+use crate::jobs::JobState;
+use crate::runtime::Runtime;
 
 /// The IPC server.
 pub struct Server {
-    cfg: Config,
-    registry: DriverRegistry,
-    jobs: JobRegistry,
+    runtime: Arc<Runtime>,
 }
 
 impl Server {
-    /// Construct the server.
-    pub fn new(cfg: Config, registry: DriverRegistry) -> Self {
-        Self {
-            cfg,
-            registry,
-            jobs: JobRegistry::new(),
-        }
+    /// Construct the server around a shared [`Runtime`].
+    pub fn new(runtime: Arc<Runtime>) -> Self {
+        Self { runtime }
     }
 
     /// Bind and serve until shutdown.
@@ -44,23 +39,21 @@ impl Server {
     ///
     /// Returns [`io::Error`] on bind/listen failure.
     pub fn run(self) -> io::Result<()> {
-        let socket = &self.cfg.socket;
+        let socket = self.runtime.config().socket.clone();
         if let Some(parent) = socket.parent() {
             std::fs::create_dir_all(parent)?;
         }
         if socket.exists() {
-            std::fs::remove_file(socket)?;
+            std::fs::remove_file(&socket)?;
         }
-        let listener = UnixListener::bind(socket)?;
-        let perms = std::fs::Permissions::from_mode(self.cfg.socket_mode);
-        std::fs::set_permissions(socket, perms)?;
-        set_socket_group(socket, &self.cfg);
+        let listener = UnixListener::bind(&socket)?;
+        let perms = std::fs::Permissions::from_mode(self.runtime.config().socket_mode);
+        std::fs::set_permissions(&socket, perms)?;
+        set_socket_group(&socket, self.runtime.config());
         tracing::info!("listening on {}", socket.display());
 
         let inner = Arc::new(ServerInner {
-            cfg: self.cfg,
-            registry: self.registry,
-            jobs: self.jobs,
+            runtime: self.runtime,
         });
 
         for stream in listener.incoming() {
@@ -77,9 +70,7 @@ impl Server {
 }
 
 struct ServerInner {
-    cfg: Config,
-    registry: DriverRegistry,
-    jobs: JobRegistry,
+    runtime: Arc<Runtime>,
 }
 
 impl ServerInner {
@@ -100,6 +91,13 @@ impl ServerInner {
                     return Ok(());
                 }
             };
+            // JobWatch streams many frames on one connection until terminal.
+            if req.kind == RequestKind::JobWatch {
+                if let Err(e) = self.stream_job_watch(&mut stream, req) {
+                    tracing::warn!("job.watch stream error: {e}");
+                }
+                return Ok(());
+            }
             let resp = self.dispatch(req);
             if let Err(e) = write_frame(&mut stream, &resp) {
                 tracing::warn!("frame write error: {e}");
@@ -109,8 +107,14 @@ impl ServerInner {
     }
 
     fn peer_allowed(&self, stream: &UnixStream) -> bool {
-        if self.cfg.allow_users.is_empty() {
+        let cfg = self.runtime.config();
+        if !cfg.require_auth {
             return true;
+        }
+        if cfg.allow_users.is_empty() {
+            // Auth on with an empty list should never happen after
+            // finalize_auth, but fail closed.
+            return false;
         }
         let creds = match getsockopt(stream, PeerCredentials) {
             Ok(c) => c,
@@ -119,8 +123,78 @@ impl ServerInner {
         let uid = creds.uid();
         let name = username_for_uid(uid);
         match name {
-            Some(n) => self.cfg.allow_users.iter().any(|u| u == &n),
+            Some(n) => cfg.allow_users.iter().any(|u| u == &n),
             None => false,
+        }
+    }
+
+    fn stream_job_watch(&self, stream: &mut UnixStream, req: Request) -> io::Result<()> {
+        let write = |stream: &mut UnixStream, resp: &Response| {
+            write_frame(stream, resp).map_err(|e| io::Error::other(e.to_string()))
+        };
+        let job_id = match req.params {
+            Some(Params::Job(p)) => crate::jobs::JobId(p.job_id),
+            _ => {
+                write(
+                    stream,
+                    &err_response(RequestKind::JobWatch, "bad_params", "missing params"),
+                )?;
+                return Ok(());
+            }
+        };
+        if self.runtime.jobs().snapshot(&job_id).is_none() {
+            write(
+                stream,
+                &err_response(RequestKind::JobWatch, "not_found", "no such job"),
+            )?;
+            return Ok(());
+        }
+        let mut since = 0usize;
+        loop {
+            let Some(frames) = self.runtime.jobs().frames_since(&job_id, since) else {
+                write(
+                    stream,
+                    &err_response(RequestKind::JobWatch, "not_found", "no such job"),
+                )?;
+                return Ok(());
+            };
+            let mut terminal = false;
+            for f in &frames {
+                let wire = job_frame_to_wire(f);
+                terminal = wire.state.is_terminal();
+                write(
+                    stream,
+                    &Response {
+                        kind: RequestKind::JobWatch,
+                        result: Some(ResultBody::JobWatch(wire)),
+                        error: None,
+                    },
+                )?;
+            }
+            since += frames.len();
+            if terminal {
+                return Ok(());
+            }
+            // If no frames yet, still emit a snapshot once so the client sees Queued.
+            if since == 0 {
+                if let Some(s) = self.runtime.jobs().snapshot(&job_id) {
+                    let wire = snapshot_to_frame(s);
+                    let terminal = wire.state.is_terminal();
+                    write(
+                        stream,
+                        &Response {
+                            kind: RequestKind::JobWatch,
+                            result: Some(ResultBody::JobWatch(wire)),
+                            error: None,
+                        },
+                    )?;
+                    since = self.runtime.jobs().frame_count(&job_id).max(1);
+                    if terminal {
+                        return Ok(());
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
 
@@ -129,76 +203,187 @@ impl ServerInner {
             RequestKind::Hello => Response {
                 kind: RequestKind::Hello,
                 result: Some(ResultBody::Hello(wp_proto::HelloResult {
-                    version: self.cfg.version.clone(),
-                    commit: self.cfg.commit.clone(),
-                    drivers: self.registry.driver_infos(),
+                    version: self.runtime.config().version.clone(),
+                    commit: self.runtime.config().commit.clone(),
+                    drivers: self.runtime.registry().driver_infos(),
                 })),
                 error: None,
             },
-            RequestKind::Scan => Response {
-                kind: RequestKind::Scan,
-                result: Some(ResultBody::Scan(Vec::new())),
-                error: None,
-            },
-            RequestKind::Probe => Response {
-                kind: RequestKind::Probe,
-                result: None,
-                error: Some(ErrorBody::new(
-                    "not_implemented",
-                    "probe requires a live radio (hardware)",
-                )),
-            },
-            RequestKind::Program => match req.params {
-                Some(Params::Program(p)) => match self.registry.driver_for(&p.candidate) {
-                    Some(_d) => match self.jobs.start(&p.candidate.driver, &p.candidate.key) {
-                        Ok(id) => Response {
-                            kind: RequestKind::Program,
-                            result: Some(ResultBody::Program(wp_proto::ProgramResult {
-                                job_id: id.0.clone(),
-                            })),
+            RequestKind::Scan => {
+                tracing::info!("scan started");
+                match self.runtime.scan() {
+                    Ok(found) => {
+                        let candidates: Vec<wp_proto::CandidateWire> = found
+                            .iter()
+                            .map(|c| wp_proto::CandidateWire {
+                                driver: c.driver.clone(),
+                                key: c.key.clone(),
+                                label: c.label.clone(),
+                                rssi: c.rssi,
+                            })
+                            .collect();
+                        if candidates.is_empty() {
+                            tracing::info!("scan finished: no handsets found");
+                        } else {
+                            let names: Vec<&str> =
+                                candidates.iter().map(|c| c.label.as_str()).collect();
+                            tracing::info!(
+                                count = candidates.len(),
+                                ?names,
+                                "scan finished: found handsets"
+                            );
+                            for c in &candidates {
+                                tracing::info!(
+                                    driver = %c.driver,
+                                    key = %c.key,
+                                    label = %c.label,
+                                    rssi = ?c.rssi,
+                                    "scan candidate"
+                                );
+                            }
+                        }
+                        Response {
+                            kind: RequestKind::Scan,
+                            result: Some(ResultBody::Scan(candidates)),
                             error: None,
-                        },
-                        Err(e) => err_response(RequestKind::Program, "busy", &e.to_string()),
-                    },
-                    None => err_response(
-                        RequestKind::Program,
-                        "unknown_driver",
-                        "no driver owns this candidate",
-                    ),
-                },
-                _ => err_response(RequestKind::Program, "bad_params", "missing params"),
-            },
-            RequestKind::JobGet => match req.params {
-                Some(Params::Job(p)) => match self.jobs.snapshot(&crate::jobs::JobId(p.job_id)) {
-                    Some(s) => Response {
-                        kind: RequestKind::JobGet,
-                        result: Some(ResultBody::Job(snapshot_to_wire(s))),
-                        error: None,
-                    },
-                    None => err_response(RequestKind::JobGet, "not_found", "no such job"),
-                },
-                _ => err_response(RequestKind::JobGet, "bad_params", "missing params"),
-            },
-            RequestKind::JobWatch => match req.params {
-                Some(Params::Job(p)) => {
-                    // Streaming is handled by the caller draining frames; here
-                    // we return the current snapshot as a single frame.
-                    match self.jobs.snapshot(&crate::jobs::JobId(p.job_id)) {
-                        Some(s) => Response {
-                            kind: RequestKind::JobWatch,
-                            result: Some(ResultBody::JobWatch(snapshot_to_frame(s))),
-                            error: None,
-                        },
-                        None => err_response(RequestKind::JobWatch, "not_found", "no such job"),
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "scan failed");
+                        err_response(RequestKind::Scan, "scan_failed", &e.to_string())
                     }
                 }
-                _ => err_response(RequestKind::JobWatch, "bad_params", "missing params"),
+            }
+            RequestKind::Probe => match req.params {
+                Some(Params::Probe(p)) => {
+                    match self.runtime.registry().driver_for(&p.candidate) {
+                        Some(d) => match self.runtime.probe(d, &p.candidate.key) {
+                            Ok(info) => Response {
+                                kind: RequestKind::Probe,
+                                result: Some(ResultBody::Probe(device_info_from_probe(
+                                    d.id_str(),
+                                    &p.candidate.key,
+                                    &info,
+                                ))),
+                                error: None,
+                            },
+                            Err(e) => {
+                                err_response(RequestKind::Probe, "probe_failed", &e.to_string())
+                            }
+                        },
+                        None => err_response(
+                            RequestKind::Probe,
+                            "unknown_driver",
+                            "no driver owns this candidate",
+                        ),
+                    }
+                }
+                _ => err_response(RequestKind::Probe, "bad_params", "missing params"),
             },
+            RequestKind::Program => match req.params {
+                Some(Params::Program(p)) => {
+                    let roster_addrs: Vec<u16> = p
+                        .request
+                        .roster
+                        .iter()
+                        .filter_map(|e| e.address)
+                        .collect();
+                    tracing::info!(
+                        driver = %p.candidate.driver,
+                        key = %p.candidate.key,
+                        identity = %p.request.identity,
+                        wifi_ssid = %p.request.wifi.ssid,
+                        server = %format!("{}:{}", p.request.server.host, p.request.server.port),
+                        automatic = ?p.request.server.automatic,
+                        roster = ?roster_addrs,
+                        bigfred_login = ?p.request.bigfred.as_ref().map(|b| b.login.as_str()),
+                        roster_mode = ?p.request.roster_mode,
+                        "program request received"
+                    );
+                    match self.runtime.registry().driver_for(&p.candidate) {
+                        Some(d) => {
+                            match self.runtime.submit_program(
+                                d,
+                                &p.candidate.key,
+                                p.request,
+                            ) {
+                                Ok(id) => {
+                                    tracing::info!(
+                                        job_id = %id.0,
+                                        driver = %p.candidate.driver,
+                                        key = %p.candidate.key,
+                                        "program job queued"
+                                    );
+                                    Response {
+                                        kind: RequestKind::Program,
+                                        result: Some(ResultBody::Program(
+                                            wp_proto::ProgramResult {
+                                                job_id: id.0.clone(),
+                                            },
+                                        )),
+                                        error: None,
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        driver = %p.candidate.driver,
+                                        key = %p.candidate.key,
+                                        error = %e,
+                                        "program rejected"
+                                    );
+                                    let code = match &e {
+                                        crate::jobs::JobError::Busy(_) => "busy",
+                                        crate::jobs::JobError::Validation(_) => "validation",
+                                        _ => "program_failed",
+                                    };
+                                    err_response(RequestKind::Program, code, &e.to_string())
+                                }
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                driver = %p.candidate.driver,
+                                "program rejected: unknown driver"
+                            );
+                            err_response(
+                                RequestKind::Program,
+                                "unknown_driver",
+                                "no driver owns this candidate",
+                            )
+                        }
+                    }
+                }
+                _ => {
+                    tracing::warn!("program rejected: missing params");
+                    err_response(RequestKind::Program, "bad_params", "missing params")
+                }
+            },
+            RequestKind::JobGet => match req.params {
+                Some(Params::Job(p)) => {
+                    match self.runtime.jobs().snapshot(&crate::jobs::JobId(p.job_id)) {
+                        Some(s) => Response {
+                            kind: RequestKind::JobGet,
+                            result: Some(ResultBody::Job(snapshot_to_wire(s))),
+                            error: None,
+                        },
+                        None => err_response(RequestKind::JobGet, "not_found", "no such job"),
+                    }
+                }
+                _ => err_response(RequestKind::JobGet, "bad_params", "missing params"),
+            },
+            RequestKind::JobWatch => {
+                // Handled in handle_conn via stream_job_watch.
+                err_response(
+                    RequestKind::JobWatch,
+                    "internal",
+                    "job.watch must stream",
+                )
+            }
             RequestKind::JobCancel => match req.params {
                 Some(Params::Job(p)) => {
                     let id = crate::jobs::JobId(p.job_id);
-                    self.jobs.cancel(&id);
-                    match self.jobs.snapshot(&id) {
+                    self.runtime.jobs().cancel(&id);
+                    match self.runtime.jobs().snapshot(&id) {
                         Some(s) => Response {
                             kind: RequestKind::JobCancel,
                             result: Some(ResultBody::JobCancelled(snapshot_to_wire(s))),
@@ -211,29 +396,36 @@ impl ServerInner {
             },
             RequestKind::Identify => Response {
                 kind: RequestKind::Identify,
-                result: Some(ResultBody::Identify),
-                error: None,
+                result: None,
+                error: Some(ErrorBody::new(
+                    "not_implemented",
+                    "driver has no identify support",
+                )),
             },
-            RequestKind::LinkStatus => Response {
-                kind: RequestKind::LinkStatus,
-                result: Some(ResultBody::LinkStatus(wp_proto::LinkStatusWire {
-                    busy: self.jobs_is_busy(),
-                    interface: self
-                        .cfg
-                        .interface
-                        .clone()
-                        .or_else(|| wp_link::first_wireless_interface().ok()),
-                    rfkill_blocked: false,
-                })),
-                error: None,
-            },
+            RequestKind::LinkStatus => {
+                let cfg = self.runtime.config();
+                let rfkill_blocked = wp_link::rfkill::aggregate_state()
+                    .ok()
+                    .flatten()
+                    .map(|s| s.blocked())
+                    .unwrap_or(false);
+                Response {
+                    kind: RequestKind::LinkStatus,
+                    result: Some(ResultBody::LinkStatus(wp_proto::LinkStatusWire {
+                        busy: self.runtime.jobs().is_busy(),
+                        interface: cfg.interface.clone().or_else(|| {
+                            if cfg.is_fake_radio() {
+                                Some("fake".into())
+                            } else {
+                                wp_link::first_wireless_interface().ok()
+                            }
+                        }),
+                        rfkill_blocked,
+                    })),
+                    error: None,
+                }
+            }
         }
-    }
-
-    fn jobs_is_busy(&self) -> bool {
-        // The registry tracks one active job; busy when a non-terminal job
-        // exists. Approximated by checking whether any job is non-terminal.
-        false
     }
 }
 
@@ -312,6 +504,31 @@ fn primary_gid_for_user(name: &str) -> Option<u32> {
     found
 }
 
+fn device_info_from_probe(
+    driver: &str,
+    key: &str,
+    info: &serde_json::Value,
+) -> wp_proto::DeviceInfoWire {
+    let identity = info
+        .get("throttleName")
+        .and_then(|v| v.as_str())
+        .or_else(|| info.pointer("/wifi/hostname").and_then(|v| v.as_str()))
+        .map(str::to_string);
+    let firmware_revision = info
+        .get("firmwareRevision")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    let battery_mv = info.get("batteryMv").and_then(|v| v.as_u64()).map(|n| n as u32);
+    wp_proto::DeviceInfoWire {
+        driver: driver.into(),
+        key: key.into(),
+        firmware_revision,
+        identity,
+        battery_mv,
+        roster: Vec::new(),
+    }
+}
+
 fn snapshot_to_wire(s: crate::jobs::JobSnapshot) -> wp_proto::JobSnapshot {
     wp_proto::JobSnapshot {
         job_id: s.id.0.clone(),
@@ -329,6 +546,16 @@ fn snapshot_to_frame(s: crate::jobs::JobSnapshot) -> wp_proto::JobFrame {
         step: None,
         progress: None,
         detail: s.detail,
+    }
+}
+
+fn job_frame_to_wire(f: &crate::jobs::JobFrame) -> wp_proto::JobFrame {
+    wp_proto::JobFrame {
+        job_id: f.id.0.clone(),
+        state: state_to_wire(f.state),
+        step: f.step.clone(),
+        progress: f.progress,
+        detail: f.detail.clone(),
     }
 }
 
@@ -388,6 +615,7 @@ bigfred:x:1000:1001:BigFred loco-server:/home/bigfred:/bin/false
     #[test]
     fn socket_group_owner_defaults_to_first_allowlist_entry() {
         let cfg = Config {
+            require_auth: true,
             allow_users: vec!["bigfred".into(), "bigfred-wizard".into()],
             socket_group_user: None,
             ..Config::default()
@@ -398,6 +626,7 @@ bigfred:x:1000:1001:BigFred loco-server:/home/bigfred:/bin/false
     #[test]
     fn socket_group_owner_override_wins() {
         let cfg = Config {
+            require_auth: true,
             allow_users: vec!["bigfred".into()],
             socket_group_user: Some("operators".into()),
             ..Config::default()
@@ -408,7 +637,19 @@ bigfred:x:1000:1001:BigFred loco-server:/home/bigfred:/bin/false
     #[test]
     fn socket_group_owner_is_none_without_an_allowlist() {
         let cfg = Config {
+            require_auth: true,
             allow_users: Vec::new(),
+            socket_group_user: None,
+            ..Config::default()
+        };
+        assert_eq!(cfg.socket_group_owner(), None);
+    }
+
+    #[test]
+    fn socket_group_owner_is_none_when_auth_disabled() {
+        let cfg = Config {
+            require_auth: false,
+            allow_users: vec!["bigfred".into()],
             socket_group_user: None,
             ..Config::default()
         };

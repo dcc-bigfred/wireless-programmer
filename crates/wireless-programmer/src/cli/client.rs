@@ -24,6 +24,7 @@ pub fn run(command: Command, socket_override: Option<PathBuf>) -> ExitCode {
         Command::Hello(a) => hello(&socket, a),
         Command::Job(a) => job(&socket, a),
         Command::Daemon(_) => unreachable!("daemon is not a client command"),
+        Command::Fake(_) => unreachable!("fake is not a client command"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

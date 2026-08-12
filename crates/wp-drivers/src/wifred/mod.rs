@@ -26,7 +26,7 @@ pub use constants::{
     Direction, FunctionInfo, CONFIG_AP_PORT, CONFIG_HOST, CONFIG_SOURCE_ADDR, MAX_FUNCTION,
     MAX_ROSTER_SLOTS, STRUCTURE_VERSION, WIFI_CONFIG_SSID_PREFIX,
 };
-pub use xml::{DeviceConfig, LocoConfig};
+pub use xml::{parse, DeviceConfig, FunctionEntry, LocoConfig, LocoServerConfig, NetworkConfig};
 
 /// The WiFred driver.
 #[derive(Debug, Default)]
