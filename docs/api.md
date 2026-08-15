@@ -147,7 +147,10 @@ writing → verifying → restarting → done`. Progress is observable via
 Opens a streaming connection. The daemon writes `JobFrame` messages until
 the job reaches a terminal state (`done`, `failed`, `cancelled`). Callers
 should set a per-frame idle read deadline (the Go client does this
-automatically).
+automatically). Firmware jobs emit a detail frame every 3 seconds while
+blocked in `espflash` or `POST /api/v1/firmware`, so a 10s per-frame idle
+deadline is enough. `job.cancel` kills an in-flight `espflash` child and
+aborts the firmware HTTP POST.
 
 ### `identify`
 

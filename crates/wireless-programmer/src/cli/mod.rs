@@ -79,7 +79,8 @@ pub struct ClientCommon {
     /// Emit machine-readable JSON instead of human-readable text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Per-operation timeout (e.g. `30s`).
+    /// Per-operation timeout (e.g. `30s`). Default 10s; `update-firmware`
+    /// uses 180s (USB) or 120s (HTTP) when omitted.
     #[arg(long, global = true)]
     pub timeout: Option<humantime::Duration>,
 }

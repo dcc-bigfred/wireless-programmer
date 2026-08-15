@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use wp_core::{
@@ -803,6 +804,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         jobs: &rt.jobs,
         id: &id,
     };
+    let cancel = Arc::new(AtomicBool::new(false));
 
     let outcome = match job.mode {
         ReachMode::Usb => {
@@ -825,13 +827,22 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             sink.detail(&format!("espflash {port}"));
             let table = job.partition_table.clone();
             let image_path = job.path.clone();
-            match wp_link::flash_usb(&port, &image_path, table.as_deref()) {
-                Ok(()) => Ok(wp_core::Outcome {
-                    restarted: true,
-                    mismatches: Vec::new(),
-                }),
-                Err(e) => Err(e),
-            }
+            let label = format!("espflash {port}");
+            await_blocking_with_heartbeats(
+                rt,
+                &id,
+                &mut sink,
+                &label,
+                Arc::clone(&cancel),
+                move |cancel| {
+                    wp_link::flash_usb(&port, &image_path, table.as_deref(), Some(cancel.as_ref()))
+                        .map(|()| wp_core::Outcome {
+                            restarted: true,
+                            mismatches: Vec::new(),
+                        })
+                },
+            )
+            .await
         }
         ReachMode::Lan => {
             let host = job
@@ -849,11 +860,20 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 );
                 return;
             }
-            let mut client = make_firmware_http_client(&host, 80, None);
-            let transport = Transport::Http(&mut client);
-            rt.registry
-                .update_firmware(driver, transport, &image, &mut sink)
-                .await
+            sink.step("write");
+            sink.detail(&format!("{} bytes", image.len()));
+            firmware_http_with_heartbeats(
+                rt,
+                &id,
+                &mut sink,
+                driver,
+                image,
+                &host,
+                80,
+                None,
+                Arc::clone(&cancel),
+            )
+            .await
         }
         ReachMode::Ap => {
             let candidate = match rt.cached(&snap.driver, &snap.key) {
@@ -910,16 +930,20 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             drop(radio);
             rt.jobs
                 .transition(&id, JobState::Writing, Some("write"), None, None);
-            let mut client = make_firmware_http_client(
+            sink.step("write");
+            sink.detail(&format!("{} bytes", image.len()));
+            let result = firmware_http_with_heartbeats(
+                rt,
+                &id,
+                &mut sink,
+                driver,
+                image,
                 &net.host.to_string(),
                 net.port,
                 Some(SocketAddr::from((net.source, 0))),
-            );
-            let transport = Transport::Http(&mut client);
-            let result = rt
-                .registry
-                .update_firmware(driver, transport, &image, &mut sink)
-                .await;
+                Arc::clone(&cancel),
+            )
+            .await;
             {
                 let mut radio = rt.radio.lock().await;
                 let _ = radio.release().await;
@@ -928,15 +952,99 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         }
     };
 
+    finish_firmware_job(rt, &id, outcome);
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn firmware_http_with_heartbeats(
+    rt: &Runtime,
+    id: &JobId,
+    sink: &mut JobProgressSink<'_>,
+    driver: Driver,
+    image: Vec<u8>,
+    host: &str,
+    port: u16,
+    source: Option<SocketAddr>,
+    cancel: Arc<AtomicBool>,
+) -> Result<wp_core::Outcome, wp_core::DriverError> {
+    let tokio_h = rt.handle();
+    let registry = Arc::clone(&rt.registry);
+    let client = make_firmware_http_client(host, port, source, Some(Arc::clone(&cancel)));
+    await_blocking_with_heartbeats(rt, id, sink, "firmware http", cancel, move |_cancel| {
+        let mut client = client;
+        let mut nop = wp_core::NoProgress;
+        let transport = Transport::Http(&mut client);
+        tokio_h.block_on(registry.update_firmware(driver, transport, &image, &mut nop))
+    })
+    .await
+}
+
+/// Run blocking firmware work off the worker thread and keep `job.watch`
+/// alive with a detail frame every [`crate::jobs::WATCH_HEARTBEAT`].
+async fn await_blocking_with_heartbeats<T, F>(
+    rt: &Runtime,
+    id: &JobId,
+    sink: &mut JobProgressSink<'_>,
+    label: &str,
+    cancel: Arc<AtomicBool>,
+    work: F,
+) -> Result<T, wp_core::DriverError>
+where
+    T: Send + 'static,
+    F: FnOnce(Arc<AtomicBool>) -> Result<T, wp_core::DriverError> + Send + 'static,
+{
+    let mut handle = tokio::task::spawn_blocking({
+        let cancel = Arc::clone(&cancel);
+        move || work(cancel)
+    });
+    let started = Instant::now();
+    loop {
+        tokio::select! {
+            biased;
+            joined = &mut handle => {
+                return joined.map_err(|e| {
+                    wp_core::DriverError::Other(format!("firmware worker join: {e}"))
+                })?;
+            }
+            _ = tokio::time::sleep(crate::jobs::WATCH_HEARTBEAT) => {
+                if rt.jobs.is_cancelled(id) {
+                    cancel.store(true, Ordering::Relaxed);
+                    continue;
+                }
+                let secs = started.elapsed().as_secs();
+                sink.detail(&format!("{label} ({secs}s)"));
+            }
+        }
+    }
+}
+
+fn finish_firmware_job(
+    rt: &Runtime,
+    id: &JobId,
+    outcome: Result<wp_core::Outcome, wp_core::DriverError>,
+) {
+    if rt
+        .jobs
+        .snapshot(id)
+        .map(|s| s.state.is_terminal())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if rt.jobs.is_cancelled(id) || matches!(outcome, Err(wp_core::DriverError::Cancelled)) {
+        rt.jobs
+            .transition(id, JobState::Cancelled, None, None, Some("cancelled"));
+        return;
+    }
     match outcome {
         Ok(o) => {
             let detail = if o.restarted { Some("restarted") } else { None };
             rt.jobs
-                .transition(&id, JobState::Done, Some("done"), Some(100), detail);
+                .transition(id, JobState::Done, Some("done"), Some(100), detail);
         }
         Err(e) => {
             rt.jobs
-                .transition(&id, JobState::Failed, None, None, Some(&e.to_string()));
+                .transition(id, JobState::Failed, None, None, Some(&e.to_string()));
         }
     }
 }
@@ -945,12 +1053,16 @@ fn make_firmware_http_client(
     host: &str,
     port: u16,
     source: Option<SocketAddr>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> BoundedHttpClient {
     let mut c = BoundedHttpClient::new(host, port)
         .with_deadline(crate::jobs::FIRMWARE_DEADLINE)
         .with_retries(0);
     if let Some(src) = source {
         c = c.with_source(src);
+    }
+    if let Some(flag) = cancel {
+        c = c.with_cancel(flag);
     }
     c
 }

@@ -131,7 +131,9 @@ like the one above to set them.
 
 `JobWatch` opens a streaming connection and returns it; the caller drains
 `JobFrame`s with `ReadFrame`, which sets a per-frame idle read deadline of
-`Timeout`. Close the conn when done.
+`Timeout`. Close the conn when done. Firmware jobs heartbeat every 3s, so
+the default 10s `Timeout` is enough during USB `espflash` or HTTP OTA.
+`JobCancel` stops `espflash` and an in-flight firmware POST.
 
 ```go
 conn, err := c.JobWatch(jobID)

@@ -3,6 +3,7 @@
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use wp_core::DriverError;
@@ -236,11 +237,19 @@ pub fn list_usb_ports() -> io::Result<Vec<UsbPort>> {
 
 /// Flash `image` onto `port` with the `espflash` CLI.
 ///
+/// `cancel` is polled while waiting on the child; a true value kills it and
+/// returns [`DriverError::Cancelled`].
+///
 /// # Errors
 ///
 /// Returns [`DriverError`] when the file cannot be classified, `espflash` is
-/// missing, or the process fails / times out.
-pub fn flash(port: &str, image: &Path, partition_table: Option<&Path>) -> Result<(), DriverError> {
+/// missing, or the process fails / times out / is cancelled.
+pub fn flash(
+    port: &str,
+    image: &Path,
+    partition_table: Option<&Path>,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), DriverError> {
     let mut header = [0u8; 16];
     let mut f = std::fs::File::open(image).map_err(|e| DriverError::Other(e.to_string()))?;
     let n = f
@@ -254,10 +263,10 @@ pub fn flash(port: &str, image: &Path, partition_table: Option<&Path>) -> Result
     let kind = classify_image(image, &header[..n], file_len).map_err(DriverError::Other)?;
     let table = resolve_partition_table(image, partition_table);
     let argv = flash_argv(&kind, port, image, table.as_deref()).map_err(DriverError::Other)?;
-    run_espflash(&argv)
+    run_espflash(&argv, cancel)
 }
 
-fn run_espflash(argv: &[String]) -> Result<(), DriverError> {
+fn run_espflash(argv: &[String], cancel: Option<&AtomicBool>) -> Result<(), DriverError> {
     let Some((sub, rest)) = argv.split_first() else {
         return Err(DriverError::Other("empty espflash argv".into()));
     };
@@ -300,6 +309,11 @@ fn run_espflash(argv: &[String]) -> Result<(), DriverError> {
                     "espflash timed out after {}s",
                     USB_FLASH_DEADLINE.as_secs()
                 )));
+            }
+            Ok(None) if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DriverError::Cancelled);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(e) => return Err(DriverError::Other(format!("wait espflash: {e}"))),

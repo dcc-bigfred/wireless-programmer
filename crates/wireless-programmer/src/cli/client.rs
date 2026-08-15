@@ -115,6 +115,23 @@ fn parse_reach_mode(mode: &str) -> wp_client::ReachMode {
     }
 }
 
+/// `update-firmware` watch idle: USB matches `espflash` (180 s), HTTP matches
+/// the LongFred POST (120 s). Explicit `--timeout` still wins. The daemon also
+/// heartbeats every 3 s so a 10 s client (Go) still works.
+fn firmware_watch_timeout(
+    explicit: Option<humantime::Duration>,
+    mode: wp_client::ReachMode,
+) -> Option<humantime::Duration> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    let d = match mode {
+        wp_client::ReachMode::Usb => wp_link::USB_FLASH_DEADLINE,
+        _ => crate::jobs::FIRMWARE_DEADLINE,
+    };
+    Some(humantime::Duration::from(d))
+}
+
 fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
     if !args.file.is_file() {
         return Err(CliError::File {
@@ -137,7 +154,7 @@ fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
     if key.is_none() && mode != wp_client::ReachMode::Usb {
         return Err(CliError::Usage("provide --key and/or --host".into()));
     }
-    let c = build_client(socket, args.common.timeout);
+    let c = build_client(socket, firmware_watch_timeout(args.common.timeout, mode));
     let candidate = key.map(|key| wp_client::CandidateRef {
         driver: args.driver.clone(),
         key,

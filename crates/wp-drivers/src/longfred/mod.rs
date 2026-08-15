@@ -151,7 +151,13 @@ impl LongFredDriver {
         progress.detail(&format!("{} bytes", image.len()));
         client
             .request("POST", FIRMWARE_PATH, Some((FIRMWARE_CONTENT_TYPE, image)))
-            .map_err(|e| DriverError::Http(e.to_string()))?;
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::Interrupted {
+                    DriverError::Cancelled
+                } else {
+                    DriverError::Http(e.to_string())
+                }
+            })?;
         progress.step("restart");
         Ok(Outcome {
             restarted: true,

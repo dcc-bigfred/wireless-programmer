@@ -8,10 +8,16 @@
 
 use std::io::{self, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use socket2::{Domain, Socket, Type};
 use wp_core::HttpClient;
+
+/// Socket I/O slice used when a cancel flag is armed, so a firmware POST can
+/// abort within about a second of `job cancel`.
+const CANCEL_POLL: Duration = Duration::from_secs(1);
 
 /// Maximum response body: 64 KiB.
 pub const MAX_BODY_BYTES: usize = 64 * 1024;
@@ -41,6 +47,8 @@ pub struct BoundedHttpClient {
     retries: u32,
     /// Maximum response body size.
     max_body: usize,
+    /// When set, long reads/writes abort with [`io::ErrorKind::Interrupted`].
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl BoundedHttpClient {
@@ -54,6 +62,7 @@ impl BoundedHttpClient {
             connect_deadline: CONNECT_DEADLINE,
             retries: RETRIES,
             max_body: MAX_BODY_BYTES,
+            cancel: None,
         }
     }
 
@@ -72,6 +81,12 @@ impl BoundedHttpClient {
     /// Override the retry count.
     pub fn with_retries(mut self, retries: u32) -> Self {
         self.retries = retries;
+        self
+    }
+
+    /// Abort in-flight I/O when `cancel` becomes true (firmware POST).
+    pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
+        self.cancel = Some(cancel);
         self
     }
 
@@ -98,6 +113,12 @@ impl BoundedHttpClient {
         stream.set_read_timeout(Some(self.deadline))?;
         stream.set_write_timeout(Some(self.deadline))?;
         let mut stream = stream;
+        let cancel = self.cancel.as_deref();
+        let io_deadline = Instant::now() + self.deadline;
+
+        if cancelled(cancel) {
+            return Err(io_cancelled());
+        }
 
         let mut request = format!(
             "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\n",
@@ -111,36 +132,50 @@ impl BoundedHttpClient {
             ));
         }
         request.push_str("\r\n");
-        stream.write_all(request.as_bytes())?;
+        write_all_interruptible(&mut stream, request.as_bytes(), io_deadline, cancel)?;
         if let Some((_, bytes)) = body {
-            stream.write_all(bytes)?;
+            write_all_interruptible(&mut stream, bytes, io_deadline, cancel)?;
         }
-        stream.flush()?;
+        flush_interruptible(&mut stream, io_deadline, cancel)?;
 
-        let started = Instant::now();
         let mut buf = Vec::with_capacity(4096);
         let mut chunk = [0u8; 4096];
         loop {
+            if cancelled(cancel) {
+                return Err(io_cancelled());
+            }
             if buf.len() > self.max_body {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "response exceeds max body size",
                 ));
             }
-            let remaining = self
-                .deadline
-                .checked_sub(started.elapsed())
-                .unwrap_or_default();
+            let remaining = io_deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "request deadline elapsed",
                 ));
             }
-            stream.set_read_timeout(Some(remaining))?;
+            let slice = if cancel.is_some() {
+                remaining.min(CANCEL_POLL)
+            } else {
+                remaining
+            };
+            stream.set_read_timeout(Some(slice))?;
             match stream.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) && cancel.is_some()
+                        && io_deadline.saturating_duration_since(Instant::now())
+                            > Duration::ZERO =>
+                {
+                    continue;
+                }
                 Err(e) if e.kind() == io::ErrorKind::TimedOut => {
                     return Err(io::Error::new(
                         io::ErrorKind::TimedOut,
@@ -186,12 +221,100 @@ impl HttpClient for BoundedHttpClient {
         for _ in 0..=self.retries {
             match self.request_once(method, path, body) {
                 Ok(body) => return Ok(body),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => return Err(e),
                 Err(e) => {
                     last = e;
                 }
             }
         }
         Err(last)
+    }
+}
+
+fn cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+}
+
+fn io_cancelled() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "cancelled")
+}
+
+fn write_all_interruptible(
+    stream: &mut TcpStream,
+    mut bytes: &[u8],
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<()> {
+    while !bytes.is_empty() {
+        if cancelled(cancel) {
+            return Err(io_cancelled());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "write deadline elapsed",
+            ));
+        }
+        let slice = if cancel.is_some() {
+            remaining.min(CANCEL_POLL)
+        } else {
+            remaining
+        };
+        stream.set_write_timeout(Some(slice))?;
+        match stream.write(bytes) {
+            Ok(0) => {
+                return Err(io::Error::new(io::ErrorKind::WriteZero, "write zero"));
+            }
+            Ok(n) => bytes = &bytes[n..],
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn flush_interruptible(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    cancel: Option<&AtomicBool>,
+) -> io::Result<()> {
+    loop {
+        if cancelled(cancel) {
+            return Err(io_cancelled());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "write deadline elapsed",
+            ));
+        }
+        let slice = if cancel.is_some() {
+            remaining.min(CANCEL_POLL)
+        } else {
+            remaining
+        };
+        stream.set_write_timeout(Some(slice))?;
+        match stream.flush() {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                ) =>
+            {
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
     }
 }
 
@@ -280,6 +403,33 @@ mod tests {
         assert_eq!(c.source, Some(src));
         assert_eq!(c.port, 80);
         assert_eq!(c.host, "192.168.4.1");
+    }
+
+    #[test]
+    fn request_aborts_on_cancel() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 64];
+            while s.read(&mut buf).unwrap_or(0) > 0 {}
+        });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let mut c = BoundedHttpClient::new(addr.ip().to_string(), addr.port())
+            .with_deadline(Duration::from_secs(10))
+            .with_retries(0)
+            .with_cancel(Arc::clone(&cancel));
+        let body = vec![0u8; 64];
+        let err = c
+            .request("POST", "/", Some(("application/octet-stream", &body)))
+            .expect_err("cancel");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        let _ = server.join();
     }
 
     // A trivial in-memory HttpClient for driver tests.

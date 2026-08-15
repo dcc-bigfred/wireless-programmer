@@ -88,7 +88,11 @@ fails at start-up with a non-zero exit. The same choice can be set with
 Every client subcommand accepts:
 
 - `--json` — emit machine-readable JSON instead of human-readable text;
-- `--timeout 30s` — per-operation timeout (parsed by `humantime`, default 10s);
+- `--timeout 30s` — per-operation timeout (parsed by `humantime`, default 10s).
+  For `update-firmware` the default is 180s in USB mode and 120s over HTTP,
+  matching the `espflash` / firmware POST deadline. The daemon also emits a
+  `job.watch` detail frame every 3s during those transfers, so a 10s idle
+  client (including the Go SDK) still sees progress;
 - `--socket PATH` — override the daemon socket path.
 
 ## Discovery workflow
@@ -157,7 +161,10 @@ wireless-programmer update-firmware --mode usb --port /dev/ttyACM0 \
 ```
 
 Like `program`, the command watches the job by default; `--no-watch`
-returns the job id immediately.
+returns the job id immediately. While `espflash` or the HTTP POST is
+running, the daemon writes a detail frame every 3 seconds (for example
+`espflash /dev/ttyUSB0 (12s)`). `job cancel` kills the `espflash` child
+and aborts an in-flight firmware POST.
 
 ## Programming workflow
 
@@ -282,10 +289,13 @@ wireless-programmer job cancel  --id <id>     # request cancellation
 its own line.
 
 If no frame arrives within the timeout, the client reports `no job progress
-frame within <timeout>` rather than a bare I/O error. Note that the daemon's
-worker loop is hardware-gated: until it drives a live radio, `job.watch`
-answers with a single snapshot frame and then goes quiet, so watching a job on
-a device-less host reaches that idle deadline by design.
+frame within <timeout>` rather than a bare I/O error. Firmware jobs keep the
+stream alive with a detail frame every 3 seconds, so watching
+`update-firmware` does not depend on raising `--timeout` unless you are
+talking to an older daemon. Note that the daemon's worker loop is
+hardware-gated: until it drives a live radio, `job.watch` answers with a
+single snapshot frame and then goes quiet, so watching a job on a
+device-less host reaches that idle deadline by design.
 
 ## Link status
 

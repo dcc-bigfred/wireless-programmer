@@ -17,6 +17,11 @@ pub const JOB_DEADLINE: Duration = Duration::from_secs(120);
 /// Firmware POST deadline (matches LongFred HTTP timeout).
 pub const FIRMWARE_DEADLINE: Duration = Duration::from_secs(120);
 
+/// How often firmware jobs emit a `job.watch` frame while blocked in
+/// `espflash` or an HTTP POST. Must stay well under the client idle default
+/// (10 s) so Go and CLI watchers do not drop the stream.
+pub const WATCH_HEARTBEAT: Duration = Duration::from_secs(3);
+
 /// A job identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JobId(pub String);
@@ -315,5 +320,17 @@ impl JobRegistry {
 impl Default for JobRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_heartbeat_beats_default_client_idle() {
+        assert!(WATCH_HEARTBEAT < Duration::from_secs(10));
+        assert!(WATCH_HEARTBEAT < FIRMWARE_DEADLINE);
+        assert!(FIRMWARE_DEADLINE <= wp_link::USB_FLASH_DEADLINE);
     }
 }
