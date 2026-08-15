@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use wp_core::{
-    CommissioningNet, Observation, ProgressSink, ProgramRequest, RosterEntry, ThrottleServer,
+    CommissioningNet, Observation, ProgramRequest, ProgressSink, RosterEntry, ThrottleServer,
     Transport, WifiCredentials,
 };
 use wp_link::{BoundedHttpClient, Radio, ScanResult};
@@ -109,13 +109,10 @@ impl Runtime {
     /// Scan the radio and claim candidates via the driver registry.
     pub fn scan(&self) -> Result<Vec<CachedCandidate>, wp_core::DriverError> {
         let radio = Arc::clone(&self.radio);
-        let results = self
-            .rt
-            .handle()
-            .block_on(async move {
-                let mut r = radio.lock().await;
-                r.scan(64).await
-            })?;
+        let results = self.rt.handle().block_on(async move {
+            let mut r = radio.lock().await;
+            r.scan(64).await
+        })?;
 
         let mut out = Vec::new();
         let mut cache = self.cache.lock();
@@ -139,6 +136,80 @@ impl Runtime {
         Ok(out)
     }
 
+    /// Discover LongFred HTTP OTA advertisers via mDNS (`_longfred-ota._tcp`).
+    pub fn scan_lan(&self) -> Result<Vec<CachedCandidate>, wp_core::DriverError> {
+        let hosts = wp_link::discover_ota_hosts(Duration::from_millis(1500))
+            .map_err(|e| wp_core::DriverError::Other(format!("mdns: {e}")))?;
+        let mut out = Vec::new();
+        let mut cache = self.cache.lock();
+        for h in hosts {
+            let key = h.ipv4.to_string();
+            let cached = CachedCandidate {
+                ssid: String::new(),
+                bssid: None,
+                driver: Driver::LongFred.id_str().into(),
+                key: key.clone(),
+                label: format!("{} ({})", h.hostname, h.ipv4),
+                rssi: None,
+            };
+            cache.insert((cached.driver.clone(), key), cached.clone());
+            out.push(cached);
+        }
+        Ok(out)
+    }
+
+    /// Remember a LAN host so `updateFirmware` can skip scan when `--host` is set.
+    pub fn cache_lan_host(&self, host: &str, label: Option<&str>) {
+        let cached = CachedCandidate {
+            ssid: String::new(),
+            bssid: None,
+            driver: Driver::LongFred.id_str().into(),
+            key: host.to_string(),
+            label: label.unwrap_or(host).to_string(),
+            rssi: None,
+        };
+        self.cache
+            .lock()
+            .insert((cached.driver.clone(), cached.key.clone()), cached);
+    }
+
+    /// Queue a firmware-upload job.
+    pub fn submit_firmware(
+        &self,
+        driver: Driver,
+        key: &str,
+        job: crate::jobs::FirmwareJob,
+    ) -> Result<JobId, crate::jobs::JobError> {
+        if !self.registry.supports_firmware_update(driver) {
+            return Err(crate::jobs::JobError::FirmwareUnsupported);
+        }
+        let id = self.jobs.submit(
+            driver.id_str(),
+            key,
+            Some(crate::jobs::JobPayload::Firmware(job)),
+        )?;
+        tracing::info!(
+            job_id = %id.0,
+            driver = driver.id_str(),
+            key,
+            "firmware job queued for worker"
+        );
+        if let Err(e) = self.tx.blocking_send(id.clone()) {
+            tracing::error!(job_id = %id.0, error = %e, "failed to enqueue firmware job");
+            self.jobs.transition(
+                &id,
+                JobState::Failed,
+                None,
+                None,
+                Some(&format!("worker channel closed: {e}")),
+            );
+            return Err(crate::jobs::JobError::Driver(wp_core::DriverError::Other(
+                "worker channel closed".into(),
+            )));
+        }
+        Ok(id)
+    }
+
     /// Look up a cached candidate.
     pub fn cached(&self, driver: &str, key: &str) -> Option<CachedCandidate> {
         self.cache
@@ -159,9 +230,11 @@ impl Runtime {
         let borrowed = owned.borrow();
         self.registry.validate(driver, &borrowed)?;
 
-        let id = self
-            .jobs
-            .submit(driver.id_str(), key, Some(request))?;
+        let id = self.jobs.submit(
+            driver.id_str(),
+            key,
+            Some(crate::jobs::JobPayload::Program(request)),
+        )?;
         tracing::info!(
             job_id = %id.0,
             driver = driver.id_str(),
@@ -191,9 +264,7 @@ impl Runtime {
         key: &str,
     ) -> Result<serde_json::Value, wp_core::DriverError> {
         let candidate = self.cached(driver.id_str(), key).ok_or_else(|| {
-            wp_core::DriverError::Other(
-                "candidate not in scan cache; run scan first".into(),
-            )
+            wp_core::DriverError::Other("candidate not in scan cache; run scan first".into())
         })?;
         let net = self.effective_net(driver);
         let radio = Arc::clone(&self.radio);
@@ -377,8 +448,7 @@ impl ProgressSink for JobProgressSink<'_> {
             _ => JobState::Writing,
         };
         tracing::info!(job_id = %self.id.0, step, ?state, "job step");
-        self.jobs
-            .transition(self.id, state, Some(step), None, None);
+        self.jobs.transition(self.id, state, Some(step), None, None);
     }
 
     fn progress(&mut self, progress: u8) {
@@ -424,18 +494,25 @@ async fn run_job(rt: &Runtime, id: JobId) {
         return;
     }
 
-    let Some(wire) = rt.jobs.take_request(&id) else {
-        tracing::error!(job_id = %id.0, "job missing program request");
+    let Some(payload) = rt.jobs.take_payload(&id) else {
+        tracing::error!(job_id = %id.0, "job missing payload");
         rt.jobs.transition(
             &id,
             JobState::Failed,
             None,
             None,
-            Some("missing program request"),
+            Some("missing job payload"),
         );
         return;
     };
 
+    match payload {
+        crate::jobs::JobPayload::Program(wire) => run_program_job(rt, id, wire).await,
+        crate::jobs::JobPayload::Firmware(job) => run_firmware_job(rt, id, job).await,
+    }
+}
+
+async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
     let snap = match rt.jobs.snapshot(&id) {
         Some(s) => s,
         None => {
@@ -623,11 +700,7 @@ async fn run_job(rt: &Runtime, id: JobId) {
                 restarted = o.restarted,
                 "job finished successfully"
             );
-            let detail = if o.restarted {
-                Some("restarted")
-            } else {
-                None
-            };
+            let detail = if o.restarted { Some("restarted") } else { None };
             rt.jobs
                 .transition(&id, JobState::Done, Some("done"), Some(100), detail);
         }
@@ -639,15 +712,179 @@ async fn run_job(rt: &Runtime, id: JobId) {
                 error = %e,
                 "job failed"
             );
+            rt.jobs
+                .transition(&id, JobState::Failed, None, None, Some(&e.to_string()));
+        }
+    }
+}
+
+async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob) {
+    use std::net::Ipv4Addr;
+    use wp_proto::ReachMode;
+
+    let snap = match rt.jobs.snapshot(&id) {
+        Some(s) => s,
+        None => return,
+    };
+    let Some(driver) = Driver::from_id(&snap.driver) else {
+        rt.jobs
+            .transition(&id, JobState::Failed, None, None, Some("unknown driver"));
+        return;
+    };
+
+    let image = match std::fs::read(&job.path) {
+        Ok(b) if !b.is_empty() => b,
+        Ok(_) => {
             rt.jobs.transition(
                 &id,
                 JobState::Failed,
                 None,
                 None,
-                Some(&e.to_string()),
+                Some("firmware file is empty"),
             );
+            return;
+        }
+        Err(e) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                None,
+                None,
+                Some(&format!("read {}: {e}", job.path.display())),
+            );
+            return;
+        }
+    };
+
+    rt.jobs
+        .transition(&id, JobState::Writing, Some("write"), Some(0), None);
+
+    let mut sink = JobProgressSink {
+        jobs: &rt.jobs,
+        id: &id,
+    };
+
+    let outcome = match job.mode {
+        ReachMode::Lan => {
+            let host = job
+                .host
+                .clone()
+                .or_else(|| rt.cached(&snap.driver, &snap.key).map(|c| c.key))
+                .unwrap_or_else(|| snap.key.clone());
+            if host.parse::<Ipv4Addr>().is_err() {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    None,
+                    None,
+                    Some("LAN firmware update needs an IPv4 --host or scan --mode lan key"),
+                );
+                return;
+            }
+            let mut client = make_firmware_http_client(&host, 80, None);
+            let transport = Transport::Http(&mut client);
+            rt.registry
+                .update_firmware(driver, transport, &image, &mut sink)
+                .await
+        }
+        ReachMode::Ap => {
+            let candidate = match rt.cached(&snap.driver, &snap.key) {
+                Some(c) => c,
+                None => {
+                    rt.jobs.transition(
+                        &id,
+                        JobState::Failed,
+                        None,
+                        None,
+                        Some("candidate not in scan cache; run scan first"),
+                    );
+                    return;
+                }
+            };
+            let net = rt.effective_net(driver);
+            rt.jobs
+                .transition(&id, JobState::Joining, Some("join"), None, None);
+            let mut radio = rt.radio.lock().await;
+            let bssid = parse_bssid(candidate.bssid.as_deref());
+            if let Err(e) = radio.connect_open(&candidate.ssid, bssid).await {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    Some("join"),
+                    None,
+                    Some(&e.to_string()),
+                );
+                let _ = radio.release().await;
+                return;
+            }
+            if let Err(e) = radio.set_address(net.source, net.prefix).await {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    Some("join"),
+                    None,
+                    Some(&e.to_string()),
+                );
+                let _ = radio.release().await;
+                return;
+            }
+            if let Err(e) = radio.link_up().await {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    Some("join"),
+                    None,
+                    Some(&e.to_string()),
+                );
+                let _ = radio.release().await;
+                return;
+            }
+            drop(radio);
+            rt.jobs
+                .transition(&id, JobState::Writing, Some("write"), None, None);
+            let mut client = make_firmware_http_client(
+                &net.host.to_string(),
+                net.port,
+                Some(SocketAddr::from((net.source, 0))),
+            );
+            let transport = Transport::Http(&mut client);
+            let result = rt
+                .registry
+                .update_firmware(driver, transport, &image, &mut sink)
+                .await;
+            {
+                let mut radio = rt.radio.lock().await;
+                let _ = radio.release().await;
+            }
+            result
+        }
+    };
+
+    match outcome {
+        Ok(o) => {
+            let detail = if o.restarted { Some("restarted") } else { None };
+            rt.jobs
+                .transition(&id, JobState::Done, Some("done"), Some(100), detail);
+        }
+        Err(e) => {
+            rt.jobs
+                .transition(&id, JobState::Failed, None, None, Some(&e.to_string()));
         }
     }
+}
+
+fn make_firmware_http_client(
+    host: &str,
+    port: u16,
+    source: Option<SocketAddr>,
+) -> BoundedHttpClient {
+    let mut c = BoundedHttpClient::new(host, port)
+        .with_deadline(crate::jobs::FIRMWARE_DEADLINE)
+        .with_retries(0);
+    if let Some(src) = source {
+        c = c.with_source(src);
+    }
+    c
 }
 
 /// Helper used by tests / fake mode to wait briefly for frames.

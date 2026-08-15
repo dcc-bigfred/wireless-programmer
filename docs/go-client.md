@@ -63,9 +63,11 @@ failure (see [Errors](#errors)).
 | Method | Wire method | Returns |
 |--------|-------------|---------|
 | `Hello()` | `hello` | `*HelloResult` (version + drivers) |
-| `Scan()` | `scan` | `[]CandidateWire` |
+| `Scan()` | `scan` | `[]CandidateWire` (Soft-AP) |
+| `ScanMode(mode)` | `scan` | `[]CandidateWire` (`ap` or `lan`) |
 | `Probe(candidate)` | `probe` | `*DeviceInfoWire` |
 | `Program(candidate, req)` | `program` | `*ProgramResult` (job id) |
+| `UpdateFirmware(mode, candidate, path, host)` | `updateFirmware` | `*ProgramResult` (job id) |
 | `JobGet(jobID)` | `job.get` | `*JobSnapshot` |
 | `JobCancel(jobID)` | `job.cancel` | `*JobSnapshot` |
 | `Identify(candidate, count)` | `identify` | `nil` |

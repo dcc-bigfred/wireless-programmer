@@ -5,9 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use wp_fake::{CompositeFakeDevice, FakeRadio};
-use wp_proto::{
-    ProgramRequestWire, RosterEntryWire, ThrottleServerWire, WifiCredentialsWire,
-};
+use wp_proto::{ProgramRequestWire, RosterEntryWire, ThrottleServerWire, WifiCredentialsWire};
 
 use wireless_programmer::config::Config;
 use wireless_programmer::drivers::{Driver, DriverRegistry};
@@ -46,10 +44,12 @@ fn setup_runtime() -> Arc<Runtime> {
     // Keep the accept loop alive for the duration of the test process.
     std::mem::forget(bootstrap);
 
-    let mut cfg = Config::default();
-    cfg.socket = temp_socket();
-    cfg.interface = Some("fake".into());
-    cfg.require_auth = false;
+    let mut cfg = Config {
+        socket: temp_socket(),
+        interface: Some("fake".into()),
+        require_auth: false,
+        ..Default::default()
+    };
     cfg.finalize_auth();
     cfg.commissioning_net_override = Some(Config::localhost_commissioning(local.port()));
 
@@ -141,7 +141,12 @@ fn fake_program_wifred_reaches_done() {
         .submit_program(Driver::WiFred, &c.key, wifred_request())
         .expect("submit");
     let state = wait_terminal(&rt, &id);
-    assert_eq!(state, JobState::Done, "detail={:?}", rt.jobs().snapshot(&id));
+    assert_eq!(
+        state,
+        JobState::Done,
+        "detail={:?}",
+        rt.jobs().snapshot(&id)
+    );
 }
 
 #[test]
@@ -156,7 +161,12 @@ fn fake_program_longfred_reaches_done() {
         .submit_program(Driver::LongFred, &c.key, longfred_request())
         .expect("submit");
     let state = wait_terminal(&rt, &id);
-    assert_eq!(state, JobState::Done, "detail={:?}", rt.jobs().snapshot(&id));
+    assert_eq!(
+        state,
+        JobState::Done,
+        "detail={:?}",
+        rt.jobs().snapshot(&id)
+    );
 }
 
 #[test]

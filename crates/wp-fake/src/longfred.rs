@@ -49,20 +49,32 @@ impl LongFredFake {
         }
 
         if let Some(login) = body.pointer("/bigfred/login").and_then(Value::as_str) {
-            if let Some(obj) = self.settings.get_mut("bigfred").and_then(Value::as_object_mut) {
+            if let Some(obj) = self
+                .settings
+                .get_mut("bigfred")
+                .and_then(Value::as_object_mut)
+            {
                 obj.insert("login".into(), json!(login));
                 obj.insert("pin_set".into(), json!(true));
             }
         }
 
         if let Some(mode) = body.get("roster_mode").and_then(Value::as_str) {
-            if let Some(obj) = self.settings.get_mut("roster").and_then(Value::as_object_mut) {
+            if let Some(obj) = self
+                .settings
+                .get_mut("roster")
+                .and_then(Value::as_object_mut)
+            {
                 obj.insert("mode".into(), json!(mode));
             }
         }
 
         if let Some(roster) = body.get("roster").and_then(Value::as_array) {
-            if let Some(obj) = self.settings.get_mut("roster").and_then(Value::as_object_mut) {
+            if let Some(obj) = self
+                .settings
+                .get_mut("roster")
+                .and_then(Value::as_object_mut)
+            {
                 obj.insert("entries".into(), Value::Array(roster.clone()));
             }
         }
@@ -108,6 +120,18 @@ impl FakeDevice for LongFredFake {
                     obj.insert("programming_mode".into(), json!(false));
                 }
                 ok_text("ok")
+            }
+            ("POST", "/api/v1/firmware") => {
+                let n = req.body.map(<[u8]>::len).unwrap_or(0);
+                if n == 0 {
+                    FakeResponse {
+                        status: 400,
+                        content_type: "text/plain",
+                        body: b"empty image".to_vec(),
+                    }
+                } else {
+                    ok_json(b"{\"ok\":true}".to_vec())
+                }
             }
             _ => not_found(),
         }
@@ -196,5 +220,22 @@ mod tests {
         assert_eq!(resp.status, 200);
         assert!(!fake.programming_mode);
         assert_eq!(fake.settings["programming_mode"], false);
+    }
+
+    #[test]
+    fn firmware_post_accepts_body() {
+        let mut fake = LongFredFake::new();
+        let resp = fake.handle(FakeRequest {
+            method: "POST",
+            path: "/api/v1/firmware",
+            body: Some(&[0xE9, 0, 1, 2]),
+        });
+        assert_eq!(resp.status, 200);
+        let empty = fake.handle(FakeRequest {
+            method: "POST",
+            path: "/api/v1/firmware",
+            body: Some(&[]),
+        });
+        assert_eq!(empty.status, 400);
     }
 }

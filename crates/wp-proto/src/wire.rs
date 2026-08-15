@@ -74,6 +74,8 @@ pub enum RequestKind {
     Identify,
     /// `link.status`: report radio/link state.
     LinkStatus,
+    /// `updateFirmware`: upload an app image over HTTP (Soft-AP or LAN).
+    UpdateFirmware,
 }
 
 /// Method parameters.
@@ -89,6 +91,10 @@ pub enum Params {
     Job(JobParams),
     /// Arguments for [`RequestKind::Identify`].
     Identify(IdentifyParams),
+    /// Arguments for [`RequestKind::Scan`] (optional; omitted means Soft-AP).
+    Scan(ScanParams),
+    /// Arguments for [`RequestKind::UpdateFirmware`].
+    UpdateFirmware(UpdateFirmwareParams),
     /// No parameters.
     None,
 }
@@ -132,6 +138,44 @@ pub struct IdentifyParams {
     /// Number of blinks (driver default applies when omitted).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
+}
+
+/// How to reach a LongFred for firmware or scan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReachMode {
+    /// Soft-AP programming network (radio scan / join).
+    #[default]
+    Ap,
+    /// Device already on the layout LAN (mDNS / `--host`).
+    Lan,
+}
+
+/// `scan` parameters.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanParams {
+    /// Soft-AP radio scan (`ap`, default) or LAN mDNS (`lan`).
+    #[serde(default)]
+    pub mode: ReachMode,
+}
+
+/// `updateFirmware` parameters. The image stays on disk; the socket frame
+/// only carries the path (1 MiB JSON limit).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateFirmwareParams {
+    /// Soft-AP (`ap`, default) or layout LAN (`lan`).
+    #[serde(default)]
+    pub mode: ReachMode,
+    /// Candidate from `scan`. Optional when [`Self::host`] is set in LAN mode.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub candidate: Option<CandidateRef>,
+    /// Path to an ESP32-C6 `.app.bin` on the hub.
+    pub path: String,
+    /// Explicit IPv4 for LAN mode (skips mDNS).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub host: Option<String>,
 }
 
 /// A reference to a scan result, stable for the lifetime of a scan session.

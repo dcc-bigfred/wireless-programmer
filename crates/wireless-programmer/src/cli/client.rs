@@ -7,7 +7,7 @@ use wp_client::{CandidateRef, JobFrame, JobStateWire};
 
 use super::{
     build_client, resolve_socket, CliError, Command, CommonArgs, IdentifyArgs, JobAction, JobArgs,
-    ProbeArgs,
+    ProbeArgs, ScanArgs, UpdateFirmwareArgs,
 };
 
 type HandlerResult = Result<(), CliError>;
@@ -19,6 +19,7 @@ pub fn run(command: Command, socket_override: Option<PathBuf>) -> ExitCode {
         Command::Scan(a) => scan(&socket, a),
         Command::Probe(a) => probe(&socket, a),
         Command::Program(a) => super::program::run(&socket, a),
+        Command::UpdateFirmware(a) => update_firmware(&socket, a),
         Command::Identify(a) => identify(&socket, a),
         Command::LinkStatus(a) => link_status(&socket, a),
         Command::Hello(a) => hello(&socket, a),
@@ -98,11 +99,59 @@ fn print_scan(candidates: &[wp_client::CandidateWire], json: bool) {
     }
 }
 
-fn scan(socket: &Path, args: CommonArgs) -> HandlerResult {
+fn scan(socket: &Path, args: ScanArgs) -> HandlerResult {
     let c = build_client(socket, args.common.timeout);
-    let candidates = c.scan()?;
+    let mode = if args.mode == "lan" {
+        wp_client::ReachMode::Lan
+    } else {
+        wp_client::ReachMode::Ap
+    };
+    let candidates = c.scan_mode(mode)?;
     print_scan(&candidates, args.common.json);
     Ok(())
+}
+
+fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
+    if !args.file.is_file() {
+        return Err(CliError::File {
+            path: args.file.display().to_string(),
+            message: "not a file".into(),
+        });
+    }
+    let mode = if args.mode == "lan" || args.host.is_some() {
+        wp_client::ReachMode::Lan
+    } else {
+        wp_client::ReachMode::Ap
+    };
+    let key = args
+        .key
+        .clone()
+        .or_else(|| args.host.clone())
+        .ok_or_else(|| CliError::Usage("provide --key and/or --host".into()))?;
+    let c = build_client(socket, args.common.timeout);
+    let candidate = wp_client::CandidateRef {
+        driver: args.driver.clone(),
+        key,
+    };
+    let started = c.update_firmware(
+        mode,
+        Some(candidate),
+        args.file.display().to_string(),
+        args.host.clone(),
+    )?;
+    if args.no_watch {
+        if args.common.json {
+            print_json(&started);
+        } else {
+            println!("job {}", started.job_id);
+        }
+        return Ok(());
+    }
+    let json = args.common.json;
+    let last = c
+        .job_watch(&started.job_id)?
+        .drain_with(|frame| print_frame(frame, json))?;
+    outcome(last)
 }
 
 fn probe(socket: &Path, args: ProbeArgs) -> HandlerResult {

@@ -125,6 +125,8 @@ pub struct DriverCapabilities {
     pub supports_throttle_server: bool,
     /// How the device is commissioned.
     pub commissioning: CommissioningKind,
+    /// Whether HTTP firmware upload is supported.
+    pub supports_firmware_update: bool,
     /// Soft-AP addressing for commissioning, when the driver does not use the
     /// daemon's historical `192.168.4.x` defaults.
     pub commissioning_net: Option<CommissioningNet>,
@@ -138,6 +140,7 @@ impl From<DriverCapabilities> for CapabilitiesWire {
             identity_format: c.identity_format.into(),
             supports_throttle_server: c.supports_throttle_server,
             commissioning: c.commissioning.into(),
+            supports_firmware_update: c.supports_firmware_update,
             commissioning_net: c.commissioning_net.map(Into::into),
         }
     }

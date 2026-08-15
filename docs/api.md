@@ -27,10 +27,11 @@ the response so callers can correlate requests without an explicit id.
 
 | Method         | Params                  | Result                | Notes                          |
 |----------------|-------------------------|-----------------------|--------------------------------|
-| `hello`        | none                    | `HelloResult`         | Version + driver capabilities  |
-| `scan`         | none                    | `Candidate[]`         | Enumerate devices on the radio |
-| `probe`        | `{ candidate }`        | `DeviceInfo`         | Read a single device's info     |
-| `program`      | `{ candidate, request }` | `ProgramResult`     | Start a job, returns `jobId`  |
+| `hello`           | none                    | `HelloResult`         | Version + driver capabilities  |
+| `scan`            | `{ mode? }`             | `Candidate[]`         | Soft-AP radio (`ap`, default) or LAN mDNS (`lan`) |
+| `probe`           | `{ candidate }`        | `DeviceInfo`         | Read a single device's info     |
+| `program`         | `{ candidate, request }` | `ProgramResult`     | Start a job, returns `jobId`  |
+| `updateFirmware`  | `{ mode, candidate?, path, host? }` | `ProgramResult` | HTTP firmware upload job |
 | `job.get`      | `{ jobId }`             | `JobSnapshot`        | Snapshot a job's state          |
 | `job.watch`    | `{ jobId }`             | `JobFrame` (stream)  | Stream progress until terminal |
 | `job.cancel`   | `{ jobId }`             | `JobSnapshot`        | Request cancellation            |
@@ -42,7 +43,7 @@ the response so callers can correlate requests without an explicit id.
 Returns the daemon version and the list of registered drivers with their
 capabilities (max roster slots, max function index, identity format,
 commissioning kind, optional Soft-AP `commissioningNet`, throttle-server
-support).
+support, firmware-update support).
 
 `version` is the release tag from the ELF section `.wireless-programmer.version`
 when the binary was published via the release workflow; otherwise the Cargo
@@ -50,10 +51,47 @@ package version. `commit` is the matching tag/build commit when available.
 
 ### `scan`
 
-Triggers an nl80211 scan and returns the candidates each driver claims:
+Optional `params.mode` is `"ap"` (default) or `"lan"`.
+
+Soft-AP (`ap`) triggers an nl80211 scan and returns the candidates each
+driver claims:
 
 - WiFred: every AP whose SSID starts with `wiFred-config`
 - LongFred: every AP whose SSID starts with `longfred_prog`
+
+LAN (`lan`) does not use the radio. It queries mDNS for
+`_longfred-ota._tcp.local` and returns LongFred candidates whose `key` is
+the advertised IPv4.
+
+### `updateFirmware`
+
+Starts a firmware-upload job. The image path is on the hub filesystem
+(typically a `.app.bin` produced by `espflash save-image` without
+`--merge`). `mode` is `"ap"` or `"lan"`.
+
+- **AP**: join the LongFred Soft-AP like `program`, then
+  `POST /api/v1/firmware` with `application/octet-stream`. The HTTP
+  transfer has a 120 s deadline and is not retried. After a successful
+  reboot the device stays in programming mode.
+- **LAN**: no radio. HTTP to `candidate.key` (an IPv4 from `scan` with
+  `mode: "lan"`) or `params.host`. The throttle must have HTTP OTA
+  enabled from the Firmware update menu. After reboot it rejoins layout
+  Wi‑Fi.
+
+A driver with `supportsFirmwareUpdate: false` (WiFred) returns
+`driverError`. A second job while the radio is held returns `busy`
+(LAN jobs do not take the radio).
+
+```jsonc
+{
+  "type": "updateFirmware",
+  "params": {
+    "mode": "ap",
+    "candidate": { "driver": "longfred", "key": "AA:BB:CC:DD:EE:01" },
+    "path": "/data/firmware/longfred-markwtech-esp32c6.app.bin"
+  }
+}
+```
 
 ### `probe`
 
@@ -156,9 +194,10 @@ over the same socket. Every client subcommand accepts `--json`
 
 | Subcommand | Purpose |
 |------------|---------|
-| `scan` | Enumerate candidate devices on the radio |
+| `scan [--mode ap\|lan]` | Enumerate Soft-AP APs or LAN OTA hosts |
 | `probe --driver --key` | Read a single candidate's device info |
 | `program --driver --key ...` | Start a programming job and stream progress to completion |
+| `update-firmware --mode ap\|lan --file ...` | Upload firmware over HTTP |
 | `identify --driver --key [--count N]` | Blink the device LED |
 | `job get\|watch\|cancel --id` | Inspect or control a running job |
 | `link-status` | Report radio/link state |

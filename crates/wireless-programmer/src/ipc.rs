@@ -210,8 +210,17 @@ impl ServerInner {
                 error: None,
             },
             RequestKind::Scan => {
-                tracing::info!("scan started");
-                match self.runtime.scan() {
+                let lan = matches!(
+                    req.params,
+                    Some(Params::Scan(ref p)) if p.mode == wp_proto::ReachMode::Lan
+                );
+                tracing::info!(lan, "scan started");
+                let scanned = if lan {
+                    self.runtime.scan_lan()
+                } else {
+                    self.runtime.scan()
+                };
+                match scanned {
                     Ok(found) => {
                         let candidates: Vec<wp_proto::CandidateWire> = found
                             .iter()
@@ -255,39 +264,31 @@ impl ServerInner {
                 }
             }
             RequestKind::Probe => match req.params {
-                Some(Params::Probe(p)) => {
-                    match self.runtime.registry().driver_for(&p.candidate) {
-                        Some(d) => match self.runtime.probe(d, &p.candidate.key) {
-                            Ok(info) => Response {
-                                kind: RequestKind::Probe,
-                                result: Some(ResultBody::Probe(device_info_from_probe(
-                                    d.id_str(),
-                                    &p.candidate.key,
-                                    &info,
-                                ))),
-                                error: None,
-                            },
-                            Err(e) => {
-                                err_response(RequestKind::Probe, "probe_failed", &e.to_string())
-                            }
+                Some(Params::Probe(p)) => match self.runtime.registry().driver_for(&p.candidate) {
+                    Some(d) => match self.runtime.probe(d, &p.candidate.key) {
+                        Ok(info) => Response {
+                            kind: RequestKind::Probe,
+                            result: Some(ResultBody::Probe(device_info_from_probe(
+                                d.id_str(),
+                                &p.candidate.key,
+                                &info,
+                            ))),
+                            error: None,
                         },
-                        None => err_response(
-                            RequestKind::Probe,
-                            "unknown_driver",
-                            "no driver owns this candidate",
-                        ),
-                    }
-                }
+                        Err(e) => err_response(RequestKind::Probe, "probe_failed", &e.to_string()),
+                    },
+                    None => err_response(
+                        RequestKind::Probe,
+                        "unknown_driver",
+                        "no driver owns this candidate",
+                    ),
+                },
                 _ => err_response(RequestKind::Probe, "bad_params", "missing params"),
             },
             RequestKind::Program => match req.params {
                 Some(Params::Program(p)) => {
-                    let roster_addrs: Vec<u16> = p
-                        .request
-                        .roster
-                        .iter()
-                        .filter_map(|e| e.address)
-                        .collect();
+                    let roster_addrs: Vec<u16> =
+                        p.request.roster.iter().filter_map(|e| e.address).collect();
                     tracing::info!(
                         driver = %p.candidate.driver,
                         key = %p.candidate.key,
@@ -302,11 +303,7 @@ impl ServerInner {
                     );
                     match self.runtime.registry().driver_for(&p.candidate) {
                         Some(d) => {
-                            match self.runtime.submit_program(
-                                d,
-                                &p.candidate.key,
-                                p.request,
-                            ) {
+                            match self.runtime.submit_program(d, &p.candidate.key, p.request) {
                                 Ok(id) => {
                                     tracing::info!(
                                         job_id = %id.0,
@@ -373,11 +370,7 @@ impl ServerInner {
             },
             RequestKind::JobWatch => {
                 // Handled in handle_conn via stream_job_watch.
-                err_response(
-                    RequestKind::JobWatch,
-                    "internal",
-                    "job.watch must stream",
-                )
+                err_response(RequestKind::JobWatch, "internal", "job.watch must stream")
             }
             RequestKind::JobCancel => match req.params {
                 Some(Params::Job(p)) => {
@@ -425,6 +418,69 @@ impl ServerInner {
                     error: None,
                 }
             }
+            RequestKind::UpdateFirmware => match req.params {
+                Some(Params::UpdateFirmware(p)) => {
+                    let driver_id = p
+                        .candidate
+                        .as_ref()
+                        .map(|c| c.driver.as_str())
+                        .unwrap_or("longfred");
+                    let key = p
+                        .host
+                        .clone()
+                        .or_else(|| p.candidate.as_ref().map(|c| c.key.clone()))
+                        .unwrap_or_default();
+                    if key.is_empty() {
+                        return err_response(
+                            RequestKind::UpdateFirmware,
+                            "bad_params",
+                            "candidate.key or host is required",
+                        );
+                    }
+                    if p.mode == wp_proto::ReachMode::Lan {
+                        if let Some(h) = p.host.as_deref() {
+                            self.runtime.cache_lan_host(h, None);
+                        }
+                    }
+                    match crate::drivers::Driver::from_id(driver_id) {
+                        Some(d) => {
+                            match self.runtime.submit_firmware(
+                                d,
+                                &key,
+                                crate::jobs::FirmwareJob {
+                                    mode: p.mode,
+                                    path: std::path::PathBuf::from(&p.path),
+                                    host: p.host,
+                                },
+                            ) {
+                                Ok(id) => Response {
+                                    kind: RequestKind::UpdateFirmware,
+                                    result: Some(ResultBody::UpdateFirmware(
+                                        wp_proto::ProgramResult {
+                                            job_id: id.0.clone(),
+                                        },
+                                    )),
+                                    error: None,
+                                },
+                                Err(e) => {
+                                    let code = match &e {
+                                        crate::jobs::JobError::Busy(_) => "busy",
+                                        crate::jobs::JobError::FirmwareUnsupported => "driverError",
+                                        _ => "firmware_failed",
+                                    };
+                                    err_response(RequestKind::UpdateFirmware, code, &e.to_string())
+                                }
+                            }
+                        }
+                        None => err_response(
+                            RequestKind::UpdateFirmware,
+                            "unknown_driver",
+                            "no driver owns this candidate",
+                        ),
+                    }
+                }
+                _ => err_response(RequestKind::UpdateFirmware, "bad_params", "missing params"),
+            },
         }
     }
 }
@@ -518,7 +574,10 @@ fn device_info_from_probe(
         .get("firmwareRevision")
         .and_then(|v| v.as_str())
         .map(str::to_string);
-    let battery_mv = info.get("batteryMv").and_then(|v| v.as_u64()).map(|n| n as u32);
+    let battery_mv = info
+        .get("batteryMv")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as u32);
     wp_proto::DeviceInfoWire {
         driver: driver.into(),
         key: key.into(),

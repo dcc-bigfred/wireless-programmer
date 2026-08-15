@@ -53,12 +53,14 @@ pub struct Cli {
 pub enum Command {
     /// Run the IPC daemon (default when no subcommand is given).
     Daemon(DaemonArgs),
-    /// Enumerate candidate devices on the radio.
-    Scan(CommonArgs),
+    /// Enumerate candidate devices on the radio (or LAN mDNS).
+    Scan(ScanArgs),
     /// Read a single candidate's device info.
     Probe(ProbeArgs),
     /// Start a programming job and stream its progress.
     Program(ProgramArgs),
+    /// Upload firmware (`.app.bin`) over HTTP Soft-AP or LAN.
+    UpdateFirmware(UpdateFirmwareArgs),
     /// Blink a device's LED so an operator can find it.
     Identify(IdentifyArgs),
     /// Report radio/link state.
@@ -83,11 +85,46 @@ pub struct ClientCommon {
 }
 
 /// Arguments for subcommands that take only the shared client flags
-/// (`scan`, `link-status`, `hello`).
+/// (`link-status`, `hello`).
 #[derive(Debug, Parser)]
 pub struct CommonArgs {
     #[command(flatten)]
     pub common: ClientCommon,
+}
+
+/// `scan` arguments.
+#[derive(Debug, Parser)]
+pub struct ScanArgs {
+    #[command(flatten)]
+    pub common: ClientCommon,
+    /// `ap` (Soft-AP radio, default) or `lan` (mDNS `_longfred-ota._tcp`).
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan"])]
+    pub mode: String,
+}
+
+/// `update-firmware` arguments.
+#[derive(Debug, Parser)]
+pub struct UpdateFirmwareArgs {
+    #[command(flatten)]
+    pub common: ClientCommon,
+    /// `ap` (Soft-AP, default) or `lan` (layout Wi‑Fi, no radio).
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan"])]
+    pub mode: String,
+    /// Driver identifier (default `longfred`).
+    #[arg(long, default_value = "longfred")]
+    pub driver: String,
+    /// Candidate key (BSSID in AP mode, IPv4 in LAN mode).
+    #[arg(long)]
+    pub key: Option<String>,
+    /// LAN IPv4 (skips mDNS). Implies `--mode lan` when set alone with `--file`.
+    #[arg(long)]
+    pub host: Option<String>,
+    /// Path to ESP32-C6 `.app.bin`.
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Do not stream job progress after starting the job.
+    #[arg(long)]
+    pub no_watch: bool,
 }
 
 /// `probe` arguments.

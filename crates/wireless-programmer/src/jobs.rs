@@ -9,10 +9,13 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use wp_core::DriverError;
-use wp_proto::ProgramRequestWire;
+use wp_proto::{ProgramRequestWire, ReachMode};
 
 /// Overall job deadline.
 pub const JOB_DEADLINE: Duration = Duration::from_secs(120);
+
+/// Firmware POST deadline (matches LongFred HTTP timeout).
+pub const FIRMWARE_DEADLINE: Duration = Duration::from_secs(120);
 
 /// A job identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -101,6 +104,29 @@ pub enum JobError {
     /// The driver failed at runtime.
     #[error("driver: {0}")]
     Driver(#[from] DriverError),
+    /// Firmware update is not supported by this driver.
+    #[error("firmware update is not supported")]
+    FirmwareUnsupported,
+}
+
+/// Payload stored for the worker.
+#[derive(Debug, Clone)]
+pub enum JobPayload {
+    /// Soft-AP settings programming.
+    Program(ProgramRequestWire),
+    /// HTTP firmware upload.
+    Firmware(FirmwareJob),
+}
+
+/// Firmware job parameters (image stays on disk).
+#[derive(Debug, Clone)]
+pub struct FirmwareJob {
+    /// Soft-AP or LAN.
+    pub mode: ReachMode,
+    /// Path to `.app.bin`.
+    pub path: std::path::PathBuf,
+    /// Explicit LAN IPv4, when set.
+    pub host: Option<String>,
 }
 
 /// Internal job record.
@@ -108,7 +134,7 @@ struct JobRecord {
     snapshot: JobSnapshot,
     frames: Vec<JobFrame>,
     cancel: bool,
-    request: Option<ProgramRequestWire>,
+    payload: Option<JobPayload>,
 }
 
 /// A shared job registry. Only one job may be active at a time.
@@ -137,12 +163,12 @@ impl JobRegistry {
         self.submit(driver, key, None)
     }
 
-    /// Start a job and store the programming request for the worker.
+    /// Start a job and store the payload for the worker.
     pub fn submit(
         &self,
         driver: &str,
         key: &str,
-        request: Option<ProgramRequestWire>,
+        payload: Option<JobPayload>,
     ) -> Result<JobId, JobError> {
         let mut inner = self.inner.lock();
         if let Some(active) = inner.active.as_ref() {
@@ -162,20 +188,28 @@ impl JobRegistry {
             },
             frames: Vec::new(),
             cancel: false,
-            request,
+            payload,
         };
         inner.active = Some(id.clone());
         inner.jobs.insert(id.clone(), rec);
         Ok(JobId(id))
     }
 
-    /// Take the stored programming request (worker pulls once).
-    pub fn take_request(&self, id: &JobId) -> Option<ProgramRequestWire> {
+    /// Take the stored payload (worker pulls once).
+    pub fn take_payload(&self, id: &JobId) -> Option<JobPayload> {
         self.inner
             .lock()
             .jobs
             .get_mut(&id.0)
-            .and_then(|r| r.request.take())
+            .and_then(|r| r.payload.take())
+    }
+
+    /// Take the stored programming request (worker pulls once).
+    pub fn take_request(&self, id: &JobId) -> Option<ProgramRequestWire> {
+        match self.take_payload(id) {
+            Some(JobPayload::Program(w)) => Some(w),
+            _ => None,
+        }
     }
 
     /// Whether a non-terminal job currently holds the radio.

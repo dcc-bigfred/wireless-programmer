@@ -7,7 +7,7 @@ use std::net::Ipv4Addr;
 
 use wp_core::{
     CommissioningNet, DeviceCandidate, DeviceDriver, DriverCapabilities, DriverError, Observation,
-    Outcome, ProgressSink, ProgramRequest, Transport,
+    Outcome, ProgramRequest, ProgressSink, Transport,
 };
 use wp_drivers::{LongFredDriver, WiFredDriver};
 
@@ -143,6 +143,34 @@ impl DriverRegistry {
         match driver {
             Driver::WiFred => self.wifred.program(transport, req, progress).await,
             Driver::LongFred => self.longfred.program(transport, req, progress).await,
+        }
+    }
+
+    /// Whether this driver can upload firmware over HTTP.
+    pub fn supports_firmware_update(&self, driver: Driver) -> bool {
+        match driver {
+            Driver::WiFred => self.wifred.capabilities().supports_firmware_update,
+            Driver::LongFred => self.longfred.capabilities().supports_firmware_update,
+        }
+    }
+
+    /// Upload firmware over the supplied transport.
+    pub async fn update_firmware(
+        &self,
+        driver: Driver,
+        transport: Transport<'_>,
+        image: &[u8],
+        progress: &mut dyn ProgressSink,
+    ) -> Result<Outcome, DriverError> {
+        match driver {
+            Driver::WiFred => Err(DriverError::Other(
+                "firmware update is not supported".into(),
+            )),
+            Driver::LongFred => {
+                self.longfred
+                    .update_firmware(transport, image, progress)
+                    .await
+            }
         }
     }
 

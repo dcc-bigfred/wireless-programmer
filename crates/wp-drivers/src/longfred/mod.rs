@@ -6,6 +6,7 @@
 //!
 //! - `GET  /api/v1/settings`
 //! - `PUT  /api/v1/settings`
+//! - `POST /api/v1/firmware`
 //! - `POST /api/v1/programming-mode/off`
 //!
 //! Configuration is written as a single JSON PUT, verified with a GET, then
@@ -22,8 +23,8 @@ use wp_core::{
 };
 
 pub use constants::{
-    CONFIG_AP_PORT, CONFIG_HOST, CONFIG_PREFIX_LEN, CONFIG_SOURCE, MAX_FUNCTION, MAX_ROSTER_SLOTS,
-    WIFI_CONFIG_SSID_PREFIX,
+    CONFIG_AP_PORT, CONFIG_HOST, CONFIG_PREFIX_LEN, CONFIG_SOURCE, FIRMWARE_CONTENT_TYPE,
+    FIRMWARE_PATH, MAX_FUNCTION, MAX_ROSTER_SLOTS, WIFI_CONFIG_SSID_PREFIX,
 };
 pub use discovery::identify;
 pub use settings::{build_settings_put, format_roster_addr, verify};
@@ -63,6 +64,7 @@ impl DeviceDriver for LongFredDriver {
             // callers can share a request shape with WiFred.
             supports_throttle_server: true,
             commissioning: wp_core::CommissioningKind::SoftAp,
+            supports_firmware_update: true,
             commissioning_net: Some(CommissioningNet {
                 host: CONFIG_HOST,
                 port: CONFIG_AP_PORT,
@@ -125,6 +127,32 @@ impl DeviceDriver for LongFredDriver {
             .request("POST", PROGRAMMING_MODE_OFF_PATH, None)
             .map_err(|e| DriverError::Http(e.to_string()))?;
 
+        Ok(Outcome {
+            restarted: true,
+            mismatches: Vec::new(),
+        })
+    }
+}
+
+impl LongFredDriver {
+    /// Stream an ESP32-C6 app image to `POST /api/v1/firmware`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DriverError`] when the HTTP POST fails.
+    pub async fn update_firmware(
+        &self,
+        transport: Transport<'_>,
+        image: &[u8],
+        progress: &mut dyn ProgressSink,
+    ) -> Result<Outcome, DriverError> {
+        let client = http_client(transport)?;
+        progress.step("write");
+        progress.detail(&format!("{} bytes", image.len()));
+        client
+            .request("POST", FIRMWARE_PATH, Some((FIRMWARE_CONTENT_TYPE, image)))
+            .map_err(|e| DriverError::Http(e.to_string()))?;
+        progress.step("restart");
         Ok(Outcome {
             restarted: true,
             mismatches: Vec::new(),

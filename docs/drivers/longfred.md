@@ -8,7 +8,8 @@ programming mode.
 In programming mode the firmware raises an **open** WiFi AP named
 `longfred_prog_XXXXXX` (6 hex characters derived from the MAC). The Soft-AP
 uses a static address `192.168.0.1/24` (not the ESP-IDF Soft-AP default of
-`192.168.4.1`). The driver advertises this via
+`192.168.4.1`) and a DHCP pool `192.168.0.50–200`. The wireless-programmer
+source address `.2` is **outside** that pool. The driver advertises this via
 `capabilities.commissioningNet`:
 
 | Field    | Value          |
@@ -32,6 +33,7 @@ Candidate identity: SSID prefix `longfred_prog`, stable key = BSSID.
 | `maxFunctionIndex`       | 0 (no function maps via settings)  |
 | `identityFormat`         | `Alphanumeric { max_len: 16 }`     |
 | `supportsThrottleServer` | true (field accepted, unused)      |
+| `supportsFirmwareUpdate` | true                               |
 | `commissioning`          | `SoftAp`                           |
 | `commissioningNet`       | `192.168.0.1` / source `.2` /24    |
 
@@ -58,6 +60,20 @@ JSON document as-is.
    and leaves the Soft-AP.
 
 The PSK / PIN are never logged by the daemon.
+
+## Firmware update
+
+`POST /api/v1/firmware` with `Content-Type: application/octet-stream` and
+the raw `.app.bin` body (ESP32-C6 app image, magic `0xE9`). Do not send a
+merged flash dump.
+
+- Soft-AP: same join as programming; after reboot `programming_mode` stays
+  set so the device returns to the AP.
+- LAN: HTTP to the layout IPv4 while the Firmware update menu is open;
+  after reboot the device rejoins layout Wi‑Fi. Discover hosts via mDNS
+  `_longfred-ota._tcp.local` (`scan --mode lan`).
+
+The HTTP transfer has a 120 s deadline and is not retried.
 
 ## Testing
 

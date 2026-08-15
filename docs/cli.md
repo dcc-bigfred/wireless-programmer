@@ -9,10 +9,11 @@ wireless-programmer [OPTIONS] [COMMAND]
 
 Commands:
   daemon        Run the IPC daemon (default when no subcommand is given)
-  scan          Enumerate candidate devices on the radio
-  probe         Read a single candidate's device info
-  program       Start a programming job and stream its progress
-  identify      Blink a device's LED so an operator can find it
+  scan             Enumerate candidate devices (Soft-AP radio or LAN mDNS)
+  probe            Read a single candidate's device info
+  program          Start a programming job and stream its progress
+  update-firmware  Upload a firmware image over HTTP (Soft-AP or LAN)
+  identify         Blink a device's LED so an operator can find it
   link-status   Report radio/link state
   hello         Exchange version + driver capabilities
   job           Inspect or control a running job
@@ -96,11 +97,14 @@ Every client subcommand accepts:
 # 1. What drivers does this daemon know?
 wireless-programmer hello
 
-# 2. Bring the radio up and scan for config APs.
+# 2. Bring the radio up and scan for config APs (Soft-AP, default).
 wireless-programmer scan
 # DRIVER     KEY                  RSSI     LABEL
 # wifred     AA:BB:CC:DD:EE:01    -54      wiFred-config-AABBCCDDEE01
 # wifred     AA:BB:CC:DD:EE:02    -61      wiFred-config-AABBCCDDEE02
+
+# LAN scan (LongFred HTTP OTA via mDNS `_longfred-ota._tcp`):
+wireless-programmer scan --mode lan
 
 # 3. Read one device's current config over the radio.
 wireless-programmer probe --driver wifred --key AA:BB:CC:DD:EE:01
@@ -115,6 +119,33 @@ nothing matches; pipe `--json` for scripting:
 ```bash
 wireless-programmer scan --json | jq '.[] | select(.rssi != null) | .key'
 ```
+
+## Firmware update
+
+`update-firmware` POSTs an application image (`.app.bin`, not a merged
+flash dump) to LongFred `POST /api/v1/firmware`. The HTTP transfer has a
+120 s deadline and is **not** retried. WiFred does not support firmware
+upload.
+
+Use `--mode ap` after putting the throttle into Soft-AP programming mode
+(8-second chord). Use `--mode lan` when the throttle is already on the
+layout Wi‑Fi and the operator has opened **Firmware update** in the Extras
+menu (HTTP is enabled only while that screen is shown).
+
+```bash
+# Soft-AP: join longfred_prog_*, POST the image, keep programming_mode.
+wireless-programmer update-firmware --mode ap --driver longfred \
+  --key AA:BB:CC:DD:EE:01 --file longfred-markwtech-esp32c6.app.bin
+
+# LAN: no radio; HTTP to the IPv4 from scan --mode lan (or --host).
+wireless-programmer update-firmware --mode lan --driver longfred \
+  --key 192.168.1.42 --file longfred-markwtech-esp32c6.app.bin
+wireless-programmer update-firmware --mode lan --host 192.168.1.42 \
+  --file longfred-markwtech-esp32c6.app.bin
+```
+
+Like `program`, the command watches the job by default; `--no-watch`
+returns the job id immediately.
 
 ## Programming workflow
 
