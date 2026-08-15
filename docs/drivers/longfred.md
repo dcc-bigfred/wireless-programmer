@@ -72,8 +72,13 @@ merged flash dump.
 - LAN: HTTP to the layout IPv4 while the Firmware update menu is open;
   after reboot the device rejoins layout Wi‑Fi. Discover hosts via mDNS
   `_longfred-ota._tcp.local` (`scan --mode lan`).
+- USB: `espflash` on a serial port (`scan --mode usb` / `--port`). ELF
+  needs `--partition-table partitions.csv` (first install of the dual-slot
+  table). Merged `.bin` is written at `0x0`; `.app.bin` at `ota_0`
+  (`0x10000`). Requires `espflash` on `PATH`.
 
-The HTTP transfer has a 120 s deadline and is not retried.
+The HTTP transfer has a 120 s deadline and is not retried. USB `espflash`
+has a 180 s deadline.
 
 ## Testing
 

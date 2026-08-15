@@ -28,10 +28,10 @@ the response so callers can correlate requests without an explicit id.
 | Method         | Params                  | Result                | Notes                          |
 |----------------|-------------------------|-----------------------|--------------------------------|
 | `hello`           | none                    | `HelloResult`         | Version + driver capabilities  |
-| `scan`            | `{ mode? }`             | `Candidate[]`         | Soft-AP radio (`ap`, default) or LAN mDNS (`lan`) |
+| `scan`            | `{ mode? }`             | `Candidate[]`         | Soft-AP (`ap`), LAN mDNS (`lan`), or USB serial (`usb`) |
 | `probe`           | `{ candidate }`        | `DeviceInfo`         | Read a single device's info     |
 | `program`         | `{ candidate, request }` | `ProgramResult`     | Start a job, returns `jobId`  |
-| `updateFirmware`  | `{ mode, candidate?, path, host? }` | `ProgramResult` | HTTP firmware upload job |
+| `updateFirmware`  | `{ mode, candidate?, path, host?, port?, partitionTable? }` | `ProgramResult` | Firmware upload job |
 | `job.get`      | `{ jobId }`             | `JobSnapshot`        | Snapshot a job's state          |
 | `job.watch`    | `{ jobId }`             | `JobFrame` (stream)  | Stream progress until terminal |
 | `job.cancel`   | `{ jobId }`             | `JobSnapshot`        | Request cancellation            |
@@ -51,7 +51,7 @@ package version. `commit` is the matching tag/build commit when available.
 
 ### `scan`
 
-Optional `params.mode` is `"ap"` (default) or `"lan"`.
+Optional `params.mode` is `"ap"` (default), `"lan"`, or `"usb"`.
 
 Soft-AP (`ap`) triggers an nl80211 scan and returns the candidates each
 driver claims:
@@ -63,24 +63,33 @@ LAN (`lan`) does not use the radio. It queries mDNS for
 `_longfred-ota._tcp.local` and returns LongFred candidates whose `key` is
 the advertised IPv4.
 
+USB (`usb`) lists serial ports (`espflash list-ports -n`, then
+`/dev/ttyUSB*` / `/dev/ttyACM*`). Each candidate `key` is the device node.
+
 ### `updateFirmware`
 
-Starts a firmware-upload job. The image path is on the hub filesystem
-(typically a `.app.bin` produced by `espflash save-image` without
-`--merge`). `mode` is `"ap"` or `"lan"`.
+Starts a firmware-upload job. The image path is on the hub filesystem.
+`mode` is `"ap"`, `"lan"`, or `"usb"`.
 
 - **AP**: join the LongFred Soft-AP like `program`, then
-  `POST /api/v1/firmware` with `application/octet-stream`. The HTTP
-  transfer has a 120 s deadline and is not retried. After a successful
+  `POST /api/v1/firmware` with `application/octet-stream` (`.app.bin` only).
+  The HTTP transfer has a 120 s deadline and is not retried. After a successful
   reboot the device stays in programming mode.
 - **LAN**: no radio. HTTP to `candidate.key` (an IPv4 from `scan` with
   `mode: "lan"`) or `params.host`. The throttle must have HTTP OTA
   enabled from the Firmware update menu. After reboot it rejoins layout
   Wi‑Fi.
+- **USB**: no radio. Runs `espflash` against `params.port` or
+  `candidate.key` (a serial device from `scan` with `mode: "usb"`). If
+  neither is set and exactly one port is present, that port is used.
+  ELF images need `params.partitionTable` (or `partitions.csv` next to
+  the file) so the dual-slot table is written. Merged `.bin` is
+  `write-bin` at `0x0`; `.app.bin` is `write-bin` at `ota_0` (`0x10000`).
+  `espflash` must be on `PATH`. Deadline 180 s.
 
 A driver with `supportsFirmwareUpdate: false` (WiFred) returns
-`driverError`. A second job while the radio is held returns `busy`
-(LAN jobs do not take the radio).
+`driverError`. A second job while another job is active returns `busy`
+(LAN and USB jobs do not take the radio).
 
 ```jsonc
 {
@@ -194,10 +203,10 @@ over the same socket. Every client subcommand accepts `--json`
 
 | Subcommand | Purpose |
 |------------|---------|
-| `scan [--mode ap\|lan]` | Enumerate Soft-AP APs or LAN OTA hosts |
+| `scan [--mode ap\|lan\|usb]` | Enumerate Soft-AP APs, LAN OTA hosts, or USB serial ports |
 | `probe --driver --key` | Read a single candidate's device info |
 | `program --driver --key ...` | Start a programming job and stream progress to completion |
-| `update-firmware --mode ap\|lan --file ...` | Upload firmware over HTTP |
+| `update-firmware --mode ap\|lan\|usb --file ...` | Upload firmware over HTTP or USB `espflash` |
 | `identify --driver --key [--count N]` | Blink the device LED |
 | `job get\|watch\|cancel --id` | Inspect or control a running job |
 | `link-status` | Report radio/link state |

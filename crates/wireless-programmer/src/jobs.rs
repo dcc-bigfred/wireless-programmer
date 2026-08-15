@@ -121,12 +121,16 @@ pub enum JobPayload {
 /// Firmware job parameters (image stays on disk).
 #[derive(Debug, Clone)]
 pub struct FirmwareJob {
-    /// Soft-AP or LAN.
+    /// Soft-AP, LAN, or USB.
     pub mode: ReachMode,
-    /// Path to `.app.bin`.
+    /// Path to the image (`.app.bin`, merged `.bin`, or ELF).
     pub path: std::path::PathBuf,
     /// Explicit LAN IPv4, when set.
     pub host: Option<String>,
+    /// USB serial device, when set.
+    pub port: Option<String>,
+    /// CSV partition table for ELF USB flashes.
+    pub partition_table: Option<std::path::PathBuf>,
 }
 
 /// Internal job record.

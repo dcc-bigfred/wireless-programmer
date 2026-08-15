@@ -3,10 +3,16 @@
 
 #![forbid(unsafe_code)]
 
+pub mod espflash;
 pub mod http;
 pub mod mdns;
 pub mod radio;
 pub mod rfkill;
+
+pub use espflash::{
+    classify_image, flash as flash_usb, flash_argv, list_usb_ports, parse_list_ports_output,
+    resolve_partition_table, ImageKind, UsbPort, CHIP, FLASH_SIZE, OTA0_OFFSET, USB_FLASH_DEADLINE,
+};
 
 pub use http::{percent_encode, BoundedHttpClient, MAX_BODY_BYTES};
 pub use mdns::{discover_ota_hosts, parse_ota_hosts, OtaHost, OTA_HTTP_SERVICE};

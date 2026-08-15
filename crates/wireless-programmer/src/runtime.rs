@@ -158,6 +158,42 @@ impl Runtime {
         Ok(out)
     }
 
+    /// Enumerate USB serial ports (`espflash list-ports` / `/dev/ttyUSB*` / `ttyACM*`).
+    pub fn scan_usb(&self) -> Result<Vec<CachedCandidate>, wp_core::DriverError> {
+        let ports = wp_link::list_usb_ports()
+            .map_err(|e| wp_core::DriverError::Other(format!("usb scan: {e}")))?;
+        let mut out = Vec::new();
+        let mut cache = self.cache.lock();
+        for p in ports {
+            let cached = CachedCandidate {
+                ssid: String::new(),
+                bssid: None,
+                driver: Driver::LongFred.id_str().into(),
+                key: p.path.clone(),
+                label: p.label,
+                rssi: None,
+            };
+            cache.insert((cached.driver.clone(), cached.key.clone()), cached.clone());
+            out.push(cached);
+        }
+        Ok(out)
+    }
+
+    /// Remember a USB serial device so `updateFirmware` can skip scan when `--port` is set.
+    pub fn cache_usb_port(&self, port: &str, label: Option<&str>) {
+        let cached = CachedCandidate {
+            ssid: String::new(),
+            bssid: None,
+            driver: Driver::LongFred.id_str().into(),
+            key: port.to_string(),
+            label: label.unwrap_or(port).to_string(),
+            rssi: None,
+        };
+        self.cache
+            .lock()
+            .insert((cached.driver.clone(), cached.key.clone()), cached);
+    }
+
     /// Remember a LAN host so `updateFirmware` can skip scan when `--host` is set.
     pub fn cache_lan_host(&self, host: &str, label: Option<&str>) {
         let cached = CachedCandidate {
@@ -732,27 +768,31 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         return;
     };
 
-    let image = match std::fs::read(&job.path) {
-        Ok(b) if !b.is_empty() => b,
-        Ok(_) => {
-            rt.jobs.transition(
-                &id,
-                JobState::Failed,
-                None,
-                None,
-                Some("firmware file is empty"),
-            );
-            return;
-        }
-        Err(e) => {
-            rt.jobs.transition(
-                &id,
-                JobState::Failed,
-                None,
-                None,
-                Some(&format!("read {}: {e}", job.path.display())),
-            );
-            return;
+    let image = if job.mode == ReachMode::Usb {
+        Vec::new()
+    } else {
+        match std::fs::read(&job.path) {
+            Ok(b) if !b.is_empty() => b,
+            Ok(_) => {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    None,
+                    None,
+                    Some("firmware file is empty"),
+                );
+                return;
+            }
+            Err(e) => {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    None,
+                    None,
+                    Some(&format!("read {}: {e}", job.path.display())),
+                );
+                return;
+            }
         }
     };
 
@@ -765,6 +805,34 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
     };
 
     let outcome = match job.mode {
+        ReachMode::Usb => {
+            let port = job
+                .port
+                .clone()
+                .or_else(|| rt.cached(&snap.driver, &snap.key).map(|c| c.key))
+                .unwrap_or_else(|| snap.key.clone());
+            if port.is_empty() {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    None,
+                    None,
+                    Some("USB firmware update needs --port or scan --mode usb"),
+                );
+                return;
+            }
+            sink.step("write");
+            sink.detail(&format!("espflash {port}"));
+            let table = job.partition_table.clone();
+            let image_path = job.path.clone();
+            match wp_link::flash_usb(&port, &image_path, table.as_deref()) {
+                Ok(()) => Ok(wp_core::Outcome {
+                    restarted: true,
+                    mismatches: Vec::new(),
+                }),
+                Err(e) => Err(e),
+            }
+        }
         ReachMode::Lan => {
             let host = job
                 .host

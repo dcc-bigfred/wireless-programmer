@@ -149,13 +149,15 @@ pub enum ReachMode {
     Ap,
     /// Device already on the layout LAN (mDNS / `--host`).
     Lan,
+    /// USB serial via `espflash` (`--port` / `scan --mode usb`).
+    Usb,
 }
 
 /// `scan` parameters.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanParams {
-    /// Soft-AP radio scan (`ap`, default) or LAN mDNS (`lan`).
+    /// Soft-AP radio scan (`ap`, default), LAN mDNS (`lan`), or USB serial (`usb`).
     #[serde(default)]
     pub mode: ReachMode,
 }
@@ -165,17 +167,24 @@ pub struct ScanParams {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateFirmwareParams {
-    /// Soft-AP (`ap`, default) or layout LAN (`lan`).
+    /// Soft-AP (`ap`, default), layout LAN (`lan`), or USB `espflash` (`usb`).
     #[serde(default)]
     pub mode: ReachMode,
-    /// Candidate from `scan`. Optional when [`Self::host`] is set in LAN mode.
+    /// Candidate from `scan`. Optional when [`Self::host`] is set in LAN mode
+    /// or [`Self::port`] in USB mode.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub candidate: Option<CandidateRef>,
-    /// Path to an ESP32-C6 `.app.bin` on the hub.
+    /// Path to a LongFred image on the hub (`.app.bin`, merged `.bin`, or ELF).
     pub path: String,
     /// Explicit IPv4 for LAN mode (skips mDNS).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub host: Option<String>,
+    /// USB serial device (e.g. `/dev/ttyACM0`). USB mode; skips `scan --mode usb`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub port: Option<String>,
+    /// CSV partition table for ELF USB flashes (`espflash flash --partition-table`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub partition_table: Option<String>,
 }
 
 /// A reference to a scan result, stable for the lifetime of a scan session.

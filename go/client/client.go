@@ -193,13 +193,15 @@ type request struct {
 }
 
 type requestParams struct {
-	Candidate *CandidateRef       `json:"candidate,omitempty"`
-	Request   *ProgramRequestWire `json:"request,omitempty"`
-	JobID     string              `json:"jobId,omitempty"`
-	Count     *uint32             `json:"count,omitempty"`
-	Mode      string              `json:"mode,omitempty"`
-	Path      string              `json:"path,omitempty"`
-	Host      string              `json:"host,omitempty"`
+	Candidate      *CandidateRef       `json:"candidate,omitempty"`
+	Request        *ProgramRequestWire `json:"request,omitempty"`
+	JobID          string              `json:"jobId,omitempty"`
+	Count          *uint32             `json:"count,omitempty"`
+	Mode           string              `json:"mode,omitempty"`
+	Path           string              `json:"path,omitempty"`
+	Host           string              `json:"host,omitempty"`
+	Port           string              `json:"port,omitempty"`
+	PartitionTable string              `json:"partitionTable,omitempty"`
 }
 
 // Client dials the wireless-programmer Unix socket.
@@ -261,7 +263,7 @@ func (c *Client) Scan() ([]CandidateWire, error) {
 	return c.ScanMode("ap")
 }
 
-// ScanMode enumerates candidates. mode is "ap" (radio Soft-AP) or "lan" (mDNS).
+// ScanMode enumerates candidates. mode is "ap" (radio Soft-AP), "lan" (mDNS), or "usb".
 func (c *Client) ScanMode(mode string) ([]CandidateWire, error) {
 	var params *requestParams
 	if mode != "" && mode != "ap" {
@@ -284,10 +286,17 @@ func (c *Client) ScanMode(mode string) ([]CandidateWire, error) {
 	return out, nil
 }
 
-// UpdateFirmware queues an HTTP firmware upload job (image path on the hub).
-// mode is "ap" or "lan". host is an optional LAN IPv4.
-func (c *Client) UpdateFirmware(mode string, candidate *CandidateRef, path, host string) (*ProgramResult, error) {
-	params := &requestParams{Mode: mode, Path: path, Host: host, Candidate: candidate}
+// UpdateFirmware queues a firmware-upload job (image path on the hub).
+// mode is "ap", "lan", or "usb". host is an optional LAN IPv4; port is a USB serial device.
+func (c *Client) UpdateFirmware(mode string, candidate *CandidateRef, path, host, port, partitionTable string) (*ProgramResult, error) {
+	params := &requestParams{
+		Mode:           mode,
+		Path:           path,
+		Host:           host,
+		Port:           port,
+		PartitionTable: partitionTable,
+		Candidate:      candidate,
+	}
 	var resp Response
 	if err := c.roundTrip(request{Type: "updateFirmware", Params: params}, &resp); err != nil {
 		return nil, err

@@ -97,8 +97,8 @@ pub struct CommonArgs {
 pub struct ScanArgs {
     #[command(flatten)]
     pub common: ClientCommon,
-    /// `ap` (Soft-AP radio, default) or `lan` (mDNS `_longfred-ota._tcp`).
-    #[arg(long, default_value = "ap", value_parser = ["ap", "lan"])]
+    /// `ap` (Soft-AP radio, default), `lan` (mDNS `_longfred-ota._tcp`), or `usb`.
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan", "usb"])]
     pub mode: String,
 }
 
@@ -107,19 +107,25 @@ pub struct ScanArgs {
 pub struct UpdateFirmwareArgs {
     #[command(flatten)]
     pub common: ClientCommon,
-    /// `ap` (Soft-AP, default) or `lan` (layout Wi‑Fi, no radio).
-    #[arg(long, default_value = "ap", value_parser = ["ap", "lan"])]
+    /// `ap` (Soft-AP, default), `lan` (layout Wi‑Fi), or `usb` (`espflash`).
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan", "usb"])]
     pub mode: String,
     /// Driver identifier (default `longfred`).
     #[arg(long, default_value = "longfred")]
     pub driver: String,
-    /// Candidate key (BSSID in AP mode, IPv4 in LAN mode).
+    /// Candidate key (BSSID in AP mode, IPv4 in LAN mode, serial device in USB mode).
     #[arg(long)]
     pub key: Option<String>,
     /// LAN IPv4 (skips mDNS). Implies `--mode lan` when set alone with `--file`.
     #[arg(long)]
     pub host: Option<String>,
-    /// Path to ESP32-C6 `.app.bin`.
+    /// USB serial device (e.g. `/dev/ttyACM0`). Implies `--mode usb`.
+    #[arg(long)]
+    pub port: Option<String>,
+    /// CSV partition table for ELF USB flashes (default: `partitions.csv` next to `--file`).
+    #[arg(long)]
+    pub partition_table: Option<PathBuf>,
+    /// Path to a LongFred image (`.app.bin`, merged `.bin`, or ELF).
     #[arg(long)]
     pub file: PathBuf,
     /// Do not stream job progress after starting the job.

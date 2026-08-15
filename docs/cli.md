@@ -12,7 +12,7 @@ Commands:
   scan             Enumerate candidate devices (Soft-AP radio or LAN mDNS)
   probe            Read a single candidate's device info
   program          Start a programming job and stream its progress
-  update-firmware  Upload a firmware image over HTTP (Soft-AP or LAN)
+  update-firmware  Upload a firmware image (Soft-AP, LAN, or USB espflash)
   identify         Blink a device's LED so an operator can find it
   link-status   Report radio/link state
   hello         Exchange version + driver capabilities
@@ -106,6 +106,9 @@ wireless-programmer scan
 # LAN scan (LongFred HTTP OTA via mDNS `_longfred-ota._tcp`):
 wireless-programmer scan --mode lan
 
+# USB serial ports (`espflash list-ports` / `/dev/ttyUSB*` / `ttyACM*`):
+wireless-programmer scan --mode usb
+
 # 3. Read one device's current config over the radio.
 wireless-programmer probe --driver wifred --key AA:BB:CC:DD:EE:01
 
@@ -122,15 +125,17 @@ wireless-programmer scan --json | jq '.[] | select(.rssi != null) | .key'
 
 ## Firmware update
 
-`update-firmware` POSTs an application image (`.app.bin`, not a merged
-flash dump) to LongFred `POST /api/v1/firmware`. The HTTP transfer has a
-120 s deadline and is **not** retried. WiFred does not support firmware
-upload.
+`update-firmware` uploads a LongFred image. Soft-AP and LAN POST
+`.app.bin` to `POST /api/v1/firmware` (120 s, not retried). USB runs
+`espflash` on a serial port (ELF, merged `.bin`, or `.app.bin`). WiFred
+does not support firmware upload.
 
 Use `--mode ap` after putting the throttle into Soft-AP programming mode
 (8-second chord). Use `--mode lan` when the throttle is already on the
 layout Wi‑Fi and the operator has opened **Firmware update** in the Extras
-menu (HTTP is enabled only while that screen is shown).
+menu (HTTP is enabled only while that screen is shown). Use `--mode usb`
+with the throttle on a USB-UART (or native USB-Serial-JTAG) cable;
+`espflash` must be on `PATH`.
 
 ```bash
 # Soft-AP: join longfred_prog_*, POST the image, keep programming_mode.
@@ -142,6 +147,13 @@ wireless-programmer update-firmware --mode lan --driver longfred \
   --key 192.168.1.42 --file longfred-markwtech-esp32c6.app.bin
 wireless-programmer update-firmware --mode lan --host 192.168.1.42 \
   --file longfred-markwtech-esp32c6.app.bin
+
+# USB: first install of the dual-slot table, or a cable update.
+wireless-programmer scan --mode usb
+wireless-programmer update-firmware --mode usb --port /dev/ttyUSB0 \
+  --file longfred-markwtech-esp32c6.elf --partition-table partitions.csv
+wireless-programmer update-firmware --mode usb --port /dev/ttyACM0 \
+  --file longfred-markwtech-esp32c6.bin
 ```
 
 Like `program`, the command watches the job by default; `--no-watch`

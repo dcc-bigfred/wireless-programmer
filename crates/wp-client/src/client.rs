@@ -139,6 +139,8 @@ impl Client {
         candidate: Option<CandidateRef>,
         path: impl Into<String>,
         host: Option<String>,
+        port: Option<String>,
+        partition_table: Option<String>,
     ) -> Result<ProgramResult, ClientError> {
         let resp = self.round_trip(&Request {
             kind: RequestKind::UpdateFirmware,
@@ -147,6 +149,8 @@ impl Client {
                 candidate,
                 path: path.into(),
                 host,
+                port,
+                partition_table,
             })),
         })?;
         match self.expect_result(resp, RequestKind::UpdateFirmware)? {

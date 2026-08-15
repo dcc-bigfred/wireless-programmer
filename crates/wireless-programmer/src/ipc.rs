@@ -210,15 +210,15 @@ impl ServerInner {
                 error: None,
             },
             RequestKind::Scan => {
-                let lan = matches!(
-                    req.params,
-                    Some(Params::Scan(ref p)) if p.mode == wp_proto::ReachMode::Lan
-                );
-                tracing::info!(lan, "scan started");
-                let scanned = if lan {
-                    self.runtime.scan_lan()
-                } else {
-                    self.runtime.scan()
+                let mode = match req.params {
+                    Some(Params::Scan(ref p)) => p.mode,
+                    _ => wp_proto::ReachMode::Ap,
+                };
+                tracing::info!(?mode, "scan started");
+                let scanned = match mode {
+                    wp_proto::ReachMode::Lan => self.runtime.scan_lan(),
+                    wp_proto::ReachMode::Usb => self.runtime.scan_usb(),
+                    wp_proto::ReachMode::Ap => self.runtime.scan(),
                 };
                 match scanned {
                     Ok(found) => {
@@ -423,18 +423,19 @@ impl ServerInner {
                     let driver_id = p
                         .candidate
                         .as_ref()
-                        .map(|c| c.driver.as_str())
-                        .unwrap_or("longfred");
+                        .map(|c| c.driver.clone())
+                        .unwrap_or_else(|| "longfred".into());
                     let key = p
-                        .host
+                        .port
                         .clone()
+                        .or_else(|| p.host.clone())
                         .or_else(|| p.candidate.as_ref().map(|c| c.key.clone()))
                         .unwrap_or_default();
-                    if key.is_empty() {
+                    if key.is_empty() && p.mode != wp_proto::ReachMode::Usb {
                         return err_response(
                             RequestKind::UpdateFirmware,
                             "bad_params",
-                            "candidate.key or host is required",
+                            "candidate.key, host, or port is required",
                         );
                     }
                     if p.mode == wp_proto::ReachMode::Lan {
@@ -442,7 +443,38 @@ impl ServerInner {
                             self.runtime.cache_lan_host(h, None);
                         }
                     }
-                    match crate::drivers::Driver::from_id(driver_id) {
+                    let key = if key.is_empty() && p.mode == wp_proto::ReachMode::Usb {
+                        match self.runtime.scan_usb() {
+                            Ok(found) if found.len() == 1 => found[0].key.clone(),
+                            Ok(found) if found.is_empty() => {
+                                return err_response(
+                                    RequestKind::UpdateFirmware,
+                                    "noCandidates",
+                                    "no USB serial ports; pass --port",
+                                );
+                            }
+                            Ok(_) => {
+                                return err_response(
+                                    RequestKind::UpdateFirmware,
+                                    "bad_params",
+                                    "multiple USB ports; pass --port",
+                                );
+                            }
+                            Err(e) => {
+                                return err_response(
+                                    RequestKind::UpdateFirmware,
+                                    "scan_failed",
+                                    &e.to_string(),
+                                );
+                            }
+                        }
+                    } else {
+                        key
+                    };
+                    if p.mode == wp_proto::ReachMode::Usb {
+                        self.runtime.cache_usb_port(&key, None);
+                    }
+                    match crate::drivers::Driver::from_id(&driver_id) {
                         Some(d) => {
                             match self.runtime.submit_firmware(
                                 d,
@@ -451,6 +483,12 @@ impl ServerInner {
                                     mode: p.mode,
                                     path: std::path::PathBuf::from(&p.path),
                                     host: p.host,
+                                    port: p.port.or_else(|| {
+                                        (p.mode == wp_proto::ReachMode::Usb).then(|| key.clone())
+                                    }),
+                                    partition_table: p
+                                        .partition_table
+                                        .map(std::path::PathBuf::from),
                                 },
                             ) {
                                 Ok(id) => Response {

@@ -101,14 +101,18 @@ fn print_scan(candidates: &[wp_client::CandidateWire], json: bool) {
 
 fn scan(socket: &Path, args: ScanArgs) -> HandlerResult {
     let c = build_client(socket, args.common.timeout);
-    let mode = if args.mode == "lan" {
-        wp_client::ReachMode::Lan
-    } else {
-        wp_client::ReachMode::Ap
-    };
+    let mode = parse_reach_mode(&args.mode);
     let candidates = c.scan_mode(mode)?;
     print_scan(&candidates, args.common.json);
     Ok(())
+}
+
+fn parse_reach_mode(mode: &str) -> wp_client::ReachMode {
+    match mode {
+        "lan" => wp_client::ReachMode::Lan,
+        "usb" => wp_client::ReachMode::Usb,
+        _ => wp_client::ReachMode::Ap,
+    }
 }
 
 fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
@@ -118,7 +122,9 @@ fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
             message: "not a file".into(),
         });
     }
-    let mode = if args.mode == "lan" || args.host.is_some() {
+    let mode = if args.port.is_some() || args.mode == "usb" {
+        wp_client::ReachMode::Usb
+    } else if args.mode == "lan" || args.host.is_some() {
         wp_client::ReachMode::Lan
     } else {
         wp_client::ReachMode::Ap
@@ -126,18 +132,25 @@ fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
     let key = args
         .key
         .clone()
-        .or_else(|| args.host.clone())
-        .ok_or_else(|| CliError::Usage("provide --key and/or --host".into()))?;
+        .or_else(|| args.port.clone())
+        .or_else(|| args.host.clone());
+    if key.is_none() && mode != wp_client::ReachMode::Usb {
+        return Err(CliError::Usage("provide --key and/or --host".into()));
+    }
     let c = build_client(socket, args.common.timeout);
-    let candidate = wp_client::CandidateRef {
+    let candidate = key.map(|key| wp_client::CandidateRef {
         driver: args.driver.clone(),
         key,
-    };
+    });
     let started = c.update_firmware(
         mode,
-        Some(candidate),
+        candidate,
         args.file.display().to_string(),
         args.host.clone(),
+        args.port.clone(),
+        args.partition_table
+            .as_ref()
+            .map(|p| p.display().to_string()),
     )?;
     if args.no_watch {
         if args.common.json {
