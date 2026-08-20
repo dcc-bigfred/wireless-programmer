@@ -113,6 +113,9 @@ wireless-programmer scan --mode lan
 # USB serial ports (`espflash list-ports` / `/dev/ttyUSB*` / `ttyACM*`):
 wireless-programmer scan --mode usb
 
+# Z21 LAN command stations (mDNS `_z21._udp` + UDP serial probe):
+wireless-programmer scan --mode z21
+
 # 3. Read one device's current config over the radio.
 wireless-programmer probe --driver wifred --key AA:BB:CC:DD:EE:01
 
@@ -200,6 +203,17 @@ Omit both for an open network. `--server-automatic` makes `--server-host` and
 `--server-port` optional, since the device discovers the server over mDNS; the
 port then defaults to the wiThrottle port `12090`.
 
+Digitrax FRED (`--driver fred`) does not use Wi‑Fi or a throttle server.
+Pass `--key host:port` (a Z21 LAN endpoint) and `--roster-file` with exactly
+one DCC address `1..=10239`. `--identity` / `--wifi-ssid` / `--server-*`
+are not required. Discover stations with `scan --mode z21`, or skip scan
+when the address is known:
+
+```bash
+wireless-programmer program --driver fred --key 192.168.0.111:21105 \
+  --roster-file roster.json
+```
+
 ### From a request file
 
 `--request-file` loads a complete `ProgramRequest` JSON document and ignores
@@ -257,9 +271,9 @@ function index (WiFred: 16).
 | Flag | Field | Notes |
 |------|-------|-------|
 | `--identity` | `identity` | Opaque; 6-digit BigFred pairing code for WiFred |
-| `--wifi-ssid` | `wifi.ssid` | Required |
+| `--wifi-ssid` | `wifi.ssid` | Required except `--driver fred` |
 | `--wifi-psk` / `--wifi-psk-file` | `wifi.psk` | Mutually exclusive; omit both for an open network |
-| `--server-host` / `--server-port` | `server.host` / `server.port` | Required unless `--server-automatic` |
+| `--server-host` / `--server-port` | `server.host` / `server.port` | Required unless `--server-automatic` or `--driver fred` |
 | `--server-automatic` | `server.automatic` | mDNS discovery instead of a fixed host; port defaults to 12090 |
 | `--roster-file` | `roster` | JSON array of `RosterEntry` |
 

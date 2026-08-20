@@ -151,13 +151,16 @@ pub enum ReachMode {
     Lan,
     /// USB serial via `espflash` (`--port` / `scan --mode usb`).
     Usb,
+    /// Z21 LAN command stations (`scan --mode z21`): mDNS `_z21._udp` + UDP probe.
+    Z21,
 }
 
 /// `scan` parameters.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanParams {
-    /// Soft-AP radio scan (`ap`, default), LAN mDNS (`lan`), or USB serial (`usb`).
+    /// Soft-AP radio scan (`ap`, default), LAN mDNS (`lan`), USB serial (`usb`),
+    /// or Z21 LAN (`z21`).
     #[serde(default)]
     pub mode: ReachMode,
 }
@@ -202,10 +205,13 @@ pub struct CandidateRef {
 #[serde(rename_all = "camelCase")]
 pub struct ProgramRequestWire {
     /// Opaque device identity (e.g. a 6-digit BigFred pairing code for WiFred).
+    #[serde(default)]
     pub identity: String,
     /// WiFi network the device should join after programming.
+    #[serde(default)]
     pub wifi: WifiCredentialsWire,
     /// wiThrottle server the device should connect to.
+    #[serde(default)]
     pub server: ThrottleServerWire,
     /// DCC vehicle list (capped by the driver's `max_roster_slots`).
     pub roster: Vec<RosterEntryWire>,
@@ -228,10 +234,11 @@ pub struct BigfredCredsWire {
 }
 
 /// WiFi credentials.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WifiCredentialsWire {
     /// SSID.
+    #[serde(default)]
     pub ssid: String,
     /// PSK (never logged by the daemon).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,10 +246,11 @@ pub struct WifiCredentialsWire {
 }
 
 /// wiThrottle server endpoint.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThrottleServerWire {
     /// Hostname or IP.
+    #[serde(default)]
     pub host: String,
     /// TCP port.
     pub port: u16,

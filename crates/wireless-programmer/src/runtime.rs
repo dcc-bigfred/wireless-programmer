@@ -193,6 +193,46 @@ impl Runtime {
         Ok(out)
     }
 
+    /// Discover Z21 LAN command stations (mDNS `_z21._udp` + UDP serial probe).
+    pub fn scan_z21(&self) -> Result<Vec<CachedCandidate>, wp_core::DriverError> {
+        let hosts = wp_link::discover_z21(Duration::from_millis(1500))
+            .map_err(|e| wp_core::DriverError::Other(format!("z21 scan: {e}")))?;
+        let mut out = Vec::new();
+        let mut cache = self.cache.lock();
+        cache.retain(|_, v| v.mode != ReachMode::Z21);
+        for h in hosts {
+            let key = h.key();
+            let cached = CachedCandidate {
+                ssid: String::new(),
+                bssid: None,
+                driver: Driver::Fred.id_str().into(),
+                key: key.clone(),
+                label: h.label(),
+                rssi: None,
+                mode: ReachMode::Z21,
+            };
+            cache.insert((cached.driver.clone(), key), cached.clone());
+            out.push(cached);
+        }
+        Ok(out)
+    }
+
+    /// Remember a Z21 `host:port` so `program` can skip `scan --mode z21`.
+    pub fn cache_z21_host(&self, key: &str, label: Option<&str>) {
+        let cached = CachedCandidate {
+            ssid: String::new(),
+            bssid: None,
+            driver: Driver::Fred.id_str().into(),
+            key: key.to_string(),
+            label: label.unwrap_or(key).to_string(),
+            rssi: None,
+            mode: ReachMode::Z21,
+        };
+        self.cache
+            .lock()
+            .insert((cached.driver.clone(), cached.key.clone()), cached);
+    }
+
     /// Remember a USB serial device so `updateFirmware` can skip scan when `--port` is set.
     pub fn cache_usb_port(&self, port: &str, label: Option<&str>) {
         let cached = CachedCandidate {
@@ -281,6 +321,10 @@ impl Runtime {
         let owned = OwnedRequest::from_wire(request.clone());
         let borrowed = owned.borrow();
         self.registry.validate(driver, &borrowed)?;
+
+        if driver == Driver::Fred && self.cached(driver.id_str(), key).is_none() {
+            self.cache_z21_host(key, None);
+        }
 
         let id = self.jobs.submit(
             driver.id_str(),
@@ -641,6 +685,115 @@ async fn run_job(rt: &Runtime, id: JobId) {
     }
 }
 
+async fn run_fred_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire, key: &str) {
+    let Some(target) = wp_link::Z21Host::parse_key(key) else {
+        rt.jobs.transition(
+            &id,
+            JobState::Failed,
+            None,
+            None,
+            Some("invalid Z21 address (want host:port)"),
+        );
+        return;
+    };
+    let Some(loco) = wire
+        .roster
+        .first()
+        .and_then(|e| e.address)
+        .filter(|a| (1..=10239).contains(a))
+    else {
+        rt.jobs.transition(
+            &id,
+            JobState::Failed,
+            None,
+            None,
+            Some("fred programming needs exactly one DCC address 1..=10239"),
+        );
+        return;
+    };
+
+    if rt.jobs.is_cancelled(&id) {
+        rt.jobs
+            .transition(&id, JobState::Cancelled, None, None, Some("cancelled"));
+        return;
+    }
+
+    rt.jobs
+        .transition(&id, JobState::Writing, Some("write"), Some(10), None);
+
+    let sock = match std::net::UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                Some("write"),
+                None,
+                Some(&format!("udp bind: {e}")),
+            );
+            return;
+        }
+    };
+
+    let outcome = tokio::task::spawn_blocking(move || wp_link::dispatch_addr(&sock, target, loco))
+        .await
+        .unwrap_or_else(|e| Err(wp_link::DispatchError::Io(e.to_string())));
+
+    if rt.jobs.is_cancelled(&id) {
+        rt.jobs
+            .transition(&id, JobState::Cancelled, None, None, Some("cancelled"));
+        return;
+    }
+
+    match outcome {
+        Ok(wp_link::DispatchOutcome::Slot(slot)) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Done,
+                Some("done"),
+                Some(100),
+                Some(&format!("slot {slot}")),
+            );
+        }
+        Ok(wp_link::DispatchOutcome::NoAck) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Done,
+                Some("done"),
+                Some(100),
+                Some("noAck"),
+            );
+        }
+        Err(wp_link::DispatchError::Rejected) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                Some("write"),
+                None,
+                Some("dispatchFailed"),
+            );
+        }
+        Err(wp_link::DispatchError::UnknownCommand) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                Some("write"),
+                None,
+                Some("z21NoLocoNet"),
+            );
+        }
+        Err(e) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                Some("write"),
+                None,
+                Some(&e.to_string()),
+            );
+        }
+    }
+}
+
 async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
     let snap = match rt.jobs.snapshot(&id) {
         Some(s) => s,
@@ -686,6 +839,11 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         wifi_ssid = %wire.wifi.ssid,
         "job started"
     );
+
+    if driver == Driver::Fred {
+        run_fred_program_job(rt, id, wire, &candidate.key).await;
+        return;
+    }
 
     let owned = OwnedRequest::from_wire(wire);
     let net = rt.effective_net(driver);
@@ -1019,6 +1177,16 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 Arc::clone(&cancel),
             )
             .await
+        }
+        ReachMode::Z21 => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                None,
+                None,
+                Some("firmware update is not supported over Z21 LAN"),
+            );
+            return;
         }
         ReachMode::Ap => {
             let candidate = match rt.cached(&snap.driver, &snap.key) {

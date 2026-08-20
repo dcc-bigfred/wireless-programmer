@@ -28,7 +28,7 @@ the response so callers can correlate requests without an explicit id.
 | Method         | Params                  | Result                | Notes                          |
 |----------------|-------------------------|-----------------------|--------------------------------|
 | `hello`           | none                    | `HelloResult`         | Version + driver capabilities  |
-| `scan`            | `{ mode? }`             | `Candidate[]`         | Soft-AP (`ap`), LAN mDNS (`lan`), or USB serial (`usb`) |
+| `scan`            | `{ mode? }`             | `Candidate[]`         | Soft-AP (`ap`), LAN mDNS (`lan`), USB serial (`usb`), or Z21 LAN (`z21`) |
 | `probe`           | `{ candidate }`        | `DeviceInfo`         | Read a single device's info     |
 | `program`         | `{ candidate, request }` | `ProgramResult`     | Start a job, returns `jobId`  |
 | `updateFirmware`  | `{ mode, candidate?, path, host?, port?, partitionTable? }` | `ProgramResult` | Firmware upload job |
@@ -51,7 +51,7 @@ package version. `commit` is the matching tag/build commit when available.
 
 ### `scan`
 
-Optional `params.mode` is `"ap"` (default), `"lan"`, or `"usb"`.
+Optional `params.mode` is `"ap"` (default), `"lan"`, `"usb"`, or `"z21"`.
 
 Soft-AP (`ap`) triggers an nl80211 scan and returns the candidates each
 driver claims:
@@ -65,6 +65,16 @@ the advertised IPv4.
 
 USB (`usb`) lists serial ports (`espflash list-ports -n`, then
 `/dev/ttyUSB*` / `/dev/ttyACM*`). Each candidate `key` is the device node.
+
+Z21 (`z21`) does not use the radio. It queries mDNS for `_z21._udp.local`
+and broadcasts `LAN_GET_SERIAL_NUMBER` to `255.255.255.255:21105` and
+`:21106`, then returns unique `ip:port` candidates with `driver: "fred"`.
+Hardware Roco Z21 usually has no mDNS, so the UDP probe is required.
+
+`program` with `driver: "fred"` does not join a Soft-AP. The daemon binds
+UDP and sends `LAN_LOCONET_DISPATCH_ADDR` (`0xA3`) with one DCC address
+from the roster (`1..=10239`). `wifi` / `server` / `identity` may be empty.
+A prior `scan` is not required when `candidate.key` is `host:port`.
 
 ### `updateFirmware`
 
@@ -135,8 +145,9 @@ request body is supplied by the caller (`bigfred`/`bigfred-wizard`), keeping
 }
 ```
 
-See [`drivers/wifred.md`](drivers/wifred.md) and
-[`drivers/longfred.md`](drivers/longfred.md) for per-driver write sequences.
+See [`drivers/wifred.md`](drivers/wifred.md),
+[`drivers/longfred.md`](drivers/longfred.md), and
+[`drivers/fred.md`](drivers/fred.md) for per-driver write sequences.
 
 The job runs through the state machine: `queued → joining → probing →
 writing → verifying → restarting → done`. Progress is observable via
@@ -208,7 +219,7 @@ over the same socket. Every client subcommand accepts `--json`
 
 | Subcommand | Purpose |
 |------------|---------|
-| `scan [--mode ap\|lan\|usb]` | Enumerate Soft-AP APs, LAN OTA hosts, or USB serial ports |
+| `scan [--mode ap\|lan\|usb\|z21]` | Enumerate Soft-AP APs, LAN OTA hosts, USB serial ports, or Z21 LAN stations |
 | `probe --driver --key` | Read a single candidate's device info |
 | `program --driver --key ...` | Start a programming job and stream progress to completion |
 | `update-firmware --mode ap\|lan\|usb --file ...` | Upload firmware over HTTP or USB `espflash` |

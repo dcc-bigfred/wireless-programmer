@@ -9,15 +9,17 @@ use wp_core::{
     CommissioningNet, DeviceCandidate, DeviceDriver, DriverCapabilities, DriverError, Observation,
     Outcome, ProgramRequest, ProgressSink, Transport,
 };
-use wp_drivers::{LongFredDriver, WiFredDriver};
+use wp_drivers::{FredDriver, LongFredDriver, WiFredDriver};
 
 /// All registered drivers.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Driver {
     /// NewHeiko WiFred.
     WiFred,
     /// LongFred Soft-AP programming.
     LongFred,
+    /// Digitrax FRED via Z21 LAN LocoNet dispatch.
+    Fred,
 }
 
 impl Driver {
@@ -26,6 +28,7 @@ impl Driver {
         match self {
             Driver::WiFred => "wifred",
             Driver::LongFred => "longfred",
+            Driver::Fred => "fred",
         }
     }
 
@@ -34,6 +37,7 @@ impl Driver {
         match self {
             Driver::WiFred => "NewHeiko WiFred",
             Driver::LongFred => "LongFred",
+            Driver::Fred => "Digitrax FRED",
         }
     }
 
@@ -47,6 +51,12 @@ impl Driver {
                 prefix: 24,
             },
             Driver::LongFred => wp_drivers::longfred::commissioning_net(),
+            Driver::Fred => CommissioningNet {
+                host: Ipv4Addr::UNSPECIFIED,
+                port: 0,
+                source: Ipv4Addr::UNSPECIFIED,
+                prefix: 0,
+            },
         }
     }
 
@@ -55,6 +65,7 @@ impl Driver {
         match id {
             "wifred" => Some(Driver::WiFred),
             "longfred" => Some(Driver::LongFred),
+            "fred" => Some(Driver::Fred),
             _ => None,
         }
     }
@@ -65,6 +76,7 @@ impl Driver {
 pub struct DriverRegistry {
     wifred: WiFredDriver,
     longfred: LongFredDriver,
+    fred: FredDriver,
 }
 
 impl DriverRegistry {
@@ -73,6 +85,7 @@ impl DriverRegistry {
         Self {
             wifred: WiFredDriver::new(),
             longfred: LongFredDriver::new(),
+            fred: FredDriver::new(),
         }
     }
 
@@ -81,6 +94,7 @@ impl DriverRegistry {
         vec![
             (Driver::WiFred, self.wifred.capabilities()),
             (Driver::LongFred, self.longfred.capabilities()),
+            (Driver::Fred, self.fred.capabilities()),
         ]
     }
 
@@ -117,6 +131,7 @@ impl DriverRegistry {
         match driver {
             Driver::WiFred => self.wifred.validate(req),
             Driver::LongFred => self.longfred.validate(req),
+            Driver::Fred => self.fred.validate(req),
         }
     }
 
@@ -129,6 +144,7 @@ impl DriverRegistry {
         match driver {
             Driver::WiFred => self.wifred.probe(transport).await,
             Driver::LongFred => self.longfred.probe(transport).await,
+            Driver::Fred => self.fred.probe(transport).await,
         }
     }
 
@@ -143,6 +159,7 @@ impl DriverRegistry {
         match driver {
             Driver::WiFred => self.wifred.program(transport, req, progress).await,
             Driver::LongFred => self.longfred.program(transport, req, progress).await,
+            Driver::Fred => self.fred.program(transport, req, progress).await,
         }
     }
 
@@ -151,6 +168,7 @@ impl DriverRegistry {
         match driver {
             Driver::WiFred => self.wifred.capabilities().supports_firmware_update,
             Driver::LongFred => self.longfred.capabilities().supports_firmware_update,
+            Driver::Fred => false,
         }
     }
 
@@ -171,6 +189,9 @@ impl DriverRegistry {
                     .update_firmware(transport, image, progress)
                     .await
             }
+            Driver::Fred => Err(DriverError::Other(
+                "firmware update is not supported".into(),
+            )),
         }
     }
 
@@ -198,6 +219,9 @@ impl DriverRegistry {
             }
             Driver::LongFred => Err(DriverError::Other(
                 "LongFred has no LED identify in programming mode".into(),
+            )),
+            Driver::Fred => Err(DriverError::Other(
+                "FRED has no LED identify over Z21 LAN".into(),
             )),
         }
     }

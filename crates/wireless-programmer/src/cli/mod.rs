@@ -98,8 +98,8 @@ pub struct CommonArgs {
 pub struct ScanArgs {
     #[command(flatten)]
     pub common: ClientCommon,
-    /// `ap` (Soft-AP radio, default), `lan` (mDNS `_longfred-ota._tcp`), or `usb`.
-    #[arg(long, default_value = "ap", value_parser = ["ap", "lan", "usb"])]
+    /// `ap` (Soft-AP radio, default), `lan` (mDNS `_longfred-ota._tcp`), `usb`, or `z21`.
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan", "usb", "z21"])]
     pub mode: String,
 }
 
@@ -152,7 +152,7 @@ pub struct ProbeArgs {
 pub struct ProgramArgs {
     #[command(flatten)]
     pub common: ClientCommon,
-    /// Driver identifier.
+    /// Driver identifier (e.g. `wifred`, `longfred`, `fred`).
     #[arg(long)]
     pub driver: String,
     /// Candidate key.

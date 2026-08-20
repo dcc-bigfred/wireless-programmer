@@ -111,6 +111,7 @@ fn parse_reach_mode(mode: &str) -> wp_client::ReachMode {
     match mode {
         "lan" => wp_client::ReachMode::Lan,
         "usb" => wp_client::ReachMode::Usb,
+        "z21" => wp_client::ReachMode::Z21,
         _ => wp_client::ReachMode::Ap,
     }
 }

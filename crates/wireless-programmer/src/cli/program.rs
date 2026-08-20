@@ -47,14 +47,27 @@ fn build_request(args: &ProgramArgs) -> Result<ProgramRequestWire, CliError> {
         None => Vec::new(),
     };
 
-    let wifi = WifiCredentialsWire {
-        ssid: required(args.wifi_ssid.clone(), "--wifi-ssid")?,
-        psk: wifi_psk(args)?,
+    let wifi = if args.driver == "fred" {
+        WifiCredentialsWire {
+            ssid: args.wifi_ssid.clone().unwrap_or_default(),
+            psk: wifi_psk(args).ok().flatten(),
+        }
+    } else {
+        WifiCredentialsWire {
+            ssid: required(args.wifi_ssid.clone(), "--wifi-ssid")?,
+            psk: wifi_psk(args)?,
+        }
     };
 
     // With mDNS discovery the device finds the host itself, so a fixed host
     // and port stop being mandatory.
-    let server = if args.server_automatic {
+    let server = if args.driver == "fred" {
+        ThrottleServerWire {
+            host: args.server_host.clone().unwrap_or_default(),
+            port: args.server_port.unwrap_or(0),
+            automatic: None,
+        }
+    } else if args.server_automatic {
         ThrottleServerWire {
             host: args.server_host.clone().unwrap_or_default(),
             port: args.server_port.unwrap_or(DEFAULT_WITHROTTLE_PORT),
@@ -69,7 +82,11 @@ fn build_request(args: &ProgramArgs) -> Result<ProgramRequestWire, CliError> {
     };
 
     Ok(ProgramRequestWire {
-        identity: required(args.identity.clone(), "--identity")?,
+        identity: if args.driver == "fred" {
+            args.identity.clone().unwrap_or_default()
+        } else {
+            required(args.identity.clone(), "--identity")?
+        },
         wifi,
         server,
         roster,
