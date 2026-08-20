@@ -5,8 +5,7 @@
 // ---------------------------------------------------------------------------
 
 /// Successful response bodies.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultBody {
     /// `hello` response.
     Hello(HelloResult),
@@ -16,6 +15,8 @@ pub enum ResultBody {
     Probe(DeviceInfoWire),
     /// `program` response.
     Program(ProgramResult),
+    /// `updateFirmware` response (queued job id).
+    UpdateFirmware(ProgramResult),
     /// `job.get` response.
     Job(JobSnapshot),
     /// `job.watch` stream frame.
@@ -67,6 +68,9 @@ pub struct CapabilitiesWire {
     pub supports_throttle_server: bool,
     /// How the device is commissioned.
     pub commissioning: CommissioningKindWire,
+    /// Whether the driver can upload firmware over HTTP.
+    #[serde(default)]
+    pub supports_firmware_update: bool,
     /// Soft-AP addressing for commissioning, when not using daemon defaults.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub commissioning_net: Option<CommissioningNetWire>,
@@ -88,7 +92,7 @@ pub struct CommissioningNetWire {
 
 /// Identity format constraints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum IdentityFormatWire {
     /// Exactly `len` decimal digits.
     Digits {

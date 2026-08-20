@@ -27,10 +27,11 @@ the response so callers can correlate requests without an explicit id.
 
 | Method         | Params                  | Result                | Notes                          |
 |----------------|-------------------------|-----------------------|--------------------------------|
-| `hello`        | none                    | `HelloResult`         | Version + driver capabilities  |
-| `scan`         | none                    | `Candidate[]`         | Enumerate devices on the radio |
-| `probe`        | `{ candidate }`        | `DeviceInfo`         | Read a single device's info     |
-| `program`      | `{ candidate, request }` | `ProgramResult`     | Start a job, returns `jobId`  |
+| `hello`           | none                    | `HelloResult`         | Version + driver capabilities  |
+| `scan`            | `{ mode? }`             | `Candidate[]`         | Soft-AP (`ap`), LAN mDNS (`lan`), or USB serial (`usb`) |
+| `probe`           | `{ candidate }`        | `DeviceInfo`         | Read a single device's info     |
+| `program`         | `{ candidate, request }` | `ProgramResult`     | Start a job, returns `jobId`  |
+| `updateFirmware`  | `{ mode, candidate?, path, host?, port?, partitionTable? }` | `ProgramResult` | Firmware upload job |
 | `job.get`      | `{ jobId }`             | `JobSnapshot`        | Snapshot a job's state          |
 | `job.watch`    | `{ jobId }`             | `JobFrame` (stream)  | Stream progress until terminal |
 | `job.cancel`   | `{ jobId }`             | `JobSnapshot`        | Request cancellation            |
@@ -42,7 +43,7 @@ the response so callers can correlate requests without an explicit id.
 Returns the daemon version and the list of registered drivers with their
 capabilities (max roster slots, max function index, identity format,
 commissioning kind, optional Soft-AP `commissioningNet`, throttle-server
-support).
+support, firmware-update support).
 
 `version` is the release tag from the ELF section `.wireless-programmer.version`
 when the binary was published via the release workflow; otherwise the Cargo
@@ -50,10 +51,56 @@ package version. `commit` is the matching tag/build commit when available.
 
 ### `scan`
 
-Triggers an nl80211 scan and returns the candidates each driver claims:
+Optional `params.mode` is `"ap"` (default), `"lan"`, or `"usb"`.
+
+Soft-AP (`ap`) triggers an nl80211 scan and returns the candidates each
+driver claims:
 
 - WiFred: every AP whose SSID starts with `wiFred-config`
 - LongFred: every AP whose SSID starts with `longfred_prog`
+
+LAN (`lan`) does not use the radio. It queries mDNS for
+`_longfred-ota._tcp.local` and returns LongFred candidates whose `key` is
+the advertised IPv4.
+
+USB (`usb`) lists serial ports (`espflash list-ports -n`, then
+`/dev/ttyUSB*` / `/dev/ttyACM*`). Each candidate `key` is the device node.
+
+### `updateFirmware`
+
+Starts a firmware-upload job. The image path is on the hub filesystem.
+`mode` is `"ap"`, `"lan"`, or `"usb"`.
+
+- **AP**: join the LongFred Soft-AP like `program`, then
+  `POST /api/v1/firmware` with `application/octet-stream` (`.app.bin` only).
+  The HTTP transfer has a 120 s deadline and is not retried. After a successful
+  reboot the device stays in programming mode.
+- **LAN**: no radio. HTTP to `candidate.key` (an IPv4 from `scan` with
+  `mode: "lan"`) or `params.host`. The throttle must have HTTP OTA
+  enabled from the Firmware update menu. After reboot it rejoins layout
+  Wi‑Fi.
+- **USB**: no radio. Runs `espflash` against `params.port` or
+  `candidate.key` (a serial device from `scan` with `mode: "usb"`). If
+  neither is set and exactly one port is present, that port is used.
+  ELF images need `params.partitionTable` (or `partitions.csv` next to
+  the file) so the dual-slot table is written. Merged `.bin` is
+  `write-bin` at `0x0`; `.app.bin` is `write-bin` at `ota_0` (`0x10000`).
+  `espflash` must be on `PATH`. Deadline 180 s.
+
+A driver with `supportsFirmwareUpdate: false` (WiFred) returns
+`driverError`. A second job while another job is active returns `busy`
+(LAN and USB jobs do not take the radio).
+
+```jsonc
+{
+  "type": "updateFirmware",
+  "params": {
+    "mode": "ap",
+    "candidate": { "driver": "longfred", "key": "AA:BB:CC:DD:EE:01" },
+    "path": "/data/firmware/longfred-markwtech-esp32c6.app.bin"
+  }
+}
+```
 
 ### `probe`
 
@@ -100,7 +147,12 @@ writing → verifying → restarting → done`. Progress is observable via
 Opens a streaming connection. The daemon writes `JobFrame` messages until
 the job reaches a terminal state (`done`, `failed`, `cancelled`). Callers
 should set a per-frame idle read deadline (the Go client does this
-automatically).
+automatically). Firmware jobs emit a detail frame every 3 seconds while
+blocked in `espflash` or `POST /api/v1/firmware`, so a 10s per-frame idle
+deadline is enough. `job.cancel` sets a cancel flag, kills an in-flight
+`espflash` child, and aborts the firmware HTTP POST. The job stays
+non-terminal and the radio slot stays occupied until the worker finishes
+tearing down; a second `program` in that window returns `busy`.
 
 ### `identify`
 
@@ -125,22 +177,27 @@ throttle. For WiFred this maps to `GET /flashred.html?count=N`.
 
 ## Permissions
 
-The socket is `0660` and peer credentials are checked via `SO_PEERCRED`
-against an allowlist (default `bigfred`, `bigfred-wizard`). Override the
-allowlist with `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login
-names, replaces the default). Only those users may issue commands.
+Peer authentication is **off by default**. The socket is then `0666` and any
+local process may connect — convenient for development (`make dev`).
 
-The allowlist is only reachable if the socket has a group the peers belong
-to: with `0660` and no group owner, a non-root client is refused with
-`EACCES` at `connect(2)`, before the daemon can inspect its credentials. So
-after binding, the daemon chowns the socket to the primary group of the first
-allowlist entry — on BigFred OS that makes it `root:bigfred 0660`, which the
-`bigfred` service can open. `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` selects a
-different login name whose primary group should own it. When the user cannot
-be resolved, or the daemon lacks the privilege to chown, it warns and leaves
-the socket owner-only rather than refusing to start; this keeps a
-non-privileged development run usable, and the warning is the signal that
-peers will not get in.
+Enable authentication with `--require-auth` or
+`WIRELESS_PROGRAMMER_REQUIRE_AUTH=1`. Then the socket is `0660` and peer
+credentials are checked via `SO_PEERCRED` against an allowlist (default
+`bigfred`, `bigfred-wizard`). Override the allowlist with `--allow-users`
+or `WIRELESS_PROGRAMMER_ALLOW_USERS` (comma-separated login names). Only
+those users may issue commands.
+
+With auth on, the allowlist is only reachable if the socket has a group the
+peers belong to: with `0660` and no group owner, a non-root client is refused
+with `EACCES` at `connect(2)`, before the daemon can inspect its credentials.
+So after binding, the daemon chowns the socket to the primary group of the
+first allowlist entry — on BigFred OS that makes it `root:bigfred 0660`, which
+the `bigfred` service can open. `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER`
+selects a different login name whose primary group should own it. When the
+user cannot be resolved, or the daemon lacks the privilege to chown, it
+warns and leaves the socket owner-only rather than refusing to start; this
+keeps a non-privileged development run usable, and the warning is the signal
+that peers will not get in.
 
 ## CLI
 
@@ -151,9 +208,10 @@ over the same socket. Every client subcommand accepts `--json`
 
 | Subcommand | Purpose |
 |------------|---------|
-| `scan` | Enumerate candidate devices on the radio |
+| `scan [--mode ap\|lan\|usb]` | Enumerate Soft-AP APs, LAN OTA hosts, or USB serial ports |
 | `probe --driver --key` | Read a single candidate's device info |
 | `program --driver --key ...` | Start a programming job and stream progress to completion |
+| `update-firmware --mode ap\|lan\|usb --file ...` | Upload firmware over HTTP or USB `espflash` |
 | `identify --driver --key [--count N]` | Blink the device LED |
 | `job get\|watch\|cancel --id` | Inspect or control a running job |
 | `link-status` | Report radio/link state |

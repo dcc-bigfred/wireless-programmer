@@ -7,7 +7,7 @@ use wp_client::{CandidateRef, JobFrame, JobStateWire};
 
 use super::{
     build_client, resolve_socket, CliError, Command, CommonArgs, IdentifyArgs, JobAction, JobArgs,
-    ProbeArgs,
+    ProbeArgs, ScanArgs, UpdateFirmwareArgs,
 };
 
 type HandlerResult = Result<(), CliError>;
@@ -19,11 +19,13 @@ pub fn run(command: Command, socket_override: Option<PathBuf>) -> ExitCode {
         Command::Scan(a) => scan(&socket, a),
         Command::Probe(a) => probe(&socket, a),
         Command::Program(a) => super::program::run(&socket, a),
+        Command::UpdateFirmware(a) => update_firmware(&socket, a),
         Command::Identify(a) => identify(&socket, a),
         Command::LinkStatus(a) => link_status(&socket, a),
         Command::Hello(a) => hello(&socket, a),
         Command::Job(a) => job(&socket, a),
         Command::Daemon(_) => unreachable!("daemon is not a client command"),
+        Command::Fake(_) => unreachable!("fake is not a client command"),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -97,11 +99,89 @@ fn print_scan(candidates: &[wp_client::CandidateWire], json: bool) {
     }
 }
 
-fn scan(socket: &Path, args: CommonArgs) -> HandlerResult {
+fn scan(socket: &Path, args: ScanArgs) -> HandlerResult {
     let c = build_client(socket, args.common.timeout);
-    let candidates = c.scan()?;
+    let mode = parse_reach_mode(&args.mode);
+    let candidates = c.scan_mode(mode)?;
     print_scan(&candidates, args.common.json);
     Ok(())
+}
+
+fn parse_reach_mode(mode: &str) -> wp_client::ReachMode {
+    match mode {
+        "lan" => wp_client::ReachMode::Lan,
+        "usb" => wp_client::ReachMode::Usb,
+        _ => wp_client::ReachMode::Ap,
+    }
+}
+
+/// `update-firmware` watch idle: USB matches `espflash` (180 s), HTTP matches
+/// the LongFred POST (120 s). Explicit `--timeout` still wins. The daemon also
+/// heartbeats every 3 s so a 10 s client (Go) still works.
+fn firmware_watch_timeout(
+    explicit: Option<humantime::Duration>,
+    mode: wp_client::ReachMode,
+) -> Option<humantime::Duration> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    let d = match mode {
+        wp_client::ReachMode::Usb => wp_link::USB_FLASH_DEADLINE,
+        _ => crate::jobs::FIRMWARE_DEADLINE,
+    };
+    Some(humantime::Duration::from(d))
+}
+
+fn update_firmware(socket: &Path, args: UpdateFirmwareArgs) -> HandlerResult {
+    if !args.file.is_file() {
+        return Err(CliError::File {
+            path: args.file.display().to_string(),
+            message: "not a file".into(),
+        });
+    }
+    let mode = if args.port.is_some() || args.mode == "usb" {
+        wp_client::ReachMode::Usb
+    } else if args.mode == "lan" || args.host.is_some() {
+        wp_client::ReachMode::Lan
+    } else {
+        wp_client::ReachMode::Ap
+    };
+    let key = args
+        .key
+        .clone()
+        .or_else(|| args.port.clone())
+        .or_else(|| args.host.clone());
+    if key.is_none() && mode != wp_client::ReachMode::Usb {
+        return Err(CliError::Usage("provide --key and/or --host".into()));
+    }
+    let c = build_client(socket, firmware_watch_timeout(args.common.timeout, mode));
+    let candidate = key.map(|key| wp_client::CandidateRef {
+        driver: args.driver.clone(),
+        key,
+    });
+    let started = c.update_firmware(
+        mode,
+        candidate,
+        args.file.display().to_string(),
+        args.host.clone(),
+        args.port.clone(),
+        args.partition_table
+            .as_ref()
+            .map(|p| p.display().to_string()),
+    )?;
+    if args.no_watch {
+        if args.common.json {
+            print_json(&started);
+        } else {
+            println!("job {}", started.job_id);
+        }
+        return Ok(());
+    }
+    let json = args.common.json;
+    let last = c
+        .job_watch(&started.job_id)?
+        .drain_with(|frame| print_frame(frame, json))?;
+    outcome(last)
 }
 
 fn probe(socket: &Path, args: ProbeArgs) -> HandlerResult {
@@ -166,6 +246,14 @@ fn hello(socket: &Path, args: CommonArgs) -> HandlerResult {
     println!("drivers:");
     for d in &h.drivers {
         println!("  {} — {}", d.id, d.name);
+        println!(
+            "    firmware update: {}",
+            if d.capabilities.supports_firmware_update {
+                "yes"
+            } else {
+                "no"
+            }
+        );
     }
     Ok(())
 }

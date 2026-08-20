@@ -41,6 +41,7 @@ impl HttpClient for FakeHttp {
             ("PUT", "/api/v1/settings") | ("POST", "/api/v1/programming-mode/off") => {
                 Ok(Vec::new())
             }
+            ("POST", "/api/v1/firmware") => Ok(br#"{"ok":true}"#.to_vec()),
             _ => Err(io::Error::other(format!("unexpected {method} {path}"))),
         }
     }
@@ -173,4 +174,24 @@ async fn program_skips_exit_on_verify_mismatch() {
     ));
     assert_eq!(fake.requests.len(), 2);
     assert_eq!(fake.requests[1].0, "GET");
+}
+
+#[tokio::test]
+async fn update_firmware_posts_app_image() {
+    let mut fake = FakeHttp {
+        requests: Vec::new(),
+        get_settings: std::collections::VecDeque::new(),
+    };
+    let image = vec![0xE9, 0, 0, 0, 0x0D, 0];
+    let mut progress = wp_core::NoProgress;
+    let transport = Transport::Http(&mut fake);
+    let outcome = LongFredDriver::new()
+        .update_firmware(transport, &image, &mut progress)
+        .await
+        .expect("firmware");
+    assert!(outcome.restarted);
+    assert_eq!(fake.requests.len(), 1);
+    assert_eq!(fake.requests[0].0, "POST");
+    assert_eq!(fake.requests[0].1, "/api/v1/firmware");
+    assert_eq!(fake.requests[0].2.as_ref().unwrap(), &image);
 }

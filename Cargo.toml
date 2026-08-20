@@ -6,6 +6,7 @@ members = [
     "crates/wp-link",
     "crates/wp-drivers",
     "crates/wp-client",
+    "crates/wp-fake",
     "crates/wireless-programmer",
 ]
 

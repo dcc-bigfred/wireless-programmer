@@ -30,6 +30,7 @@ The AP runs a web server on port 80 with a built-in DHCP server at
 | `maxFunctionIndex`       | 16 (`MAX_FUNCTION`)    |
 | `identityFormat`         | `Digits { len: 6 }`    |
 | `supportsThrottleServer` | true                   |
+| `supportsFirmwareUpdate` | false                  |
 | `commissioning`          | `SoftAp`               |
 
 The identity is a **6-digit BigFred pairing code** written into the firmware's

@@ -5,12 +5,22 @@ CARGO ?= cargo
 RUSTUP_TOOLCHAIN ?= stable
 export RUSTUP_TOOLCHAIN
 
-.PHONY: all build release release-musl check test test-release-assertions clean fmt clippy
+# Optional wireless iface for `make dev` (e.g. INTERFACE=wlan0).
+INTERFACE ?=
+
+.PHONY: all build release release-musl check test test-release-assertions clean fmt clippy dev
 
 all: build
 
 build:
 	$(CARGO) build --workspace
+
+# Build and run the daemon in the foreground (local development).
+# Override iface: make dev INTERFACE=wlp2s0
+# Override data root / socket: DATA_DIR=/tmp/wp-dev make dev
+dev:
+	$(CARGO) run -p wireless-programmer -- daemon --verbose \
+		$(if $(INTERFACE),--interface $(INTERFACE),)
 
 release:
 	$(CARGO) build --workspace --release

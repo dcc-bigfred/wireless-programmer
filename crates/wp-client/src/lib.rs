@@ -17,6 +17,6 @@ pub use watch::WatchStream;
 
 pub use wp_proto::{
     CandidateRef, CandidateWire, DeviceInfoWire, FunctionMappingWire, HelloResult, JobFrame,
-    JobSnapshot, JobStateWire, LinkStatusWire, ProgramRequestWire, ProgramResult, RosterEntryWire,
-    ThrottleServerWire, WifiCredentialsWire,
+    JobSnapshot, JobStateWire, LinkStatusWire, ProgramRequestWire, ProgramResult, ReachMode,
+    RosterEntryWire, ThrottleServerWire, WifiCredentialsWire,
 };

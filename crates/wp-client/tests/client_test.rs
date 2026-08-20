@@ -181,7 +181,7 @@ fn not_found_and_unknown_codes_map_distinctly() {
 fn a_mismatched_response_kind_is_rejected() {
     let daemon = FakeDaemon::spawn(reply_once(|_| Response {
         kind: RequestKind::Scan,
-        result: Some(ResultBody::Hello(hello_result())),
+        result: Some(ResultBody::Scan(Vec::new())),
         error: None,
     }));
 

@@ -2,6 +2,7 @@
 
 mod client;
 mod daemon;
+mod fake;
 mod program;
 
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ use clap::{Parser, Subcommand};
 use wp_client::ClientError;
 
 pub use daemon::{run_daemon, DaemonArgs};
+pub use fake::{run_fake, FakeArgs};
 
 /// Command-line interface.
 #[derive(Debug, Parser)]
@@ -35,6 +37,15 @@ pub struct Cli {
     /// `daemon --interface`. Overrides `WIRELESS_PROGRAMMER_INTERFACE`.
     #[arg(short = 'i', long = "interface", value_name = "IFACE")]
     pub interface: Option<String>,
+
+    /// Require SO_PEERCRED peer authentication (daemon only). Also accepted
+    /// on `daemon --require-auth`.
+    #[arg(long = "require-auth")]
+    pub require_auth: bool,
+
+    /// Comma-separated allowlist when peer auth is on (daemon only).
+    #[arg(long = "allow-users", value_name = "USERS")]
+    pub allow_users: Option<String>,
 }
 
 /// Top-level subcommands.
@@ -42,12 +53,14 @@ pub struct Cli {
 pub enum Command {
     /// Run the IPC daemon (default when no subcommand is given).
     Daemon(DaemonArgs),
-    /// Enumerate candidate devices on the radio.
-    Scan(CommonArgs),
+    /// Enumerate candidate devices on the radio (or LAN mDNS).
+    Scan(ScanArgs),
     /// Read a single candidate's device info.
     Probe(ProbeArgs),
     /// Start a programming job and stream its progress.
     Program(ProgramArgs),
+    /// Upload firmware (`.app.bin`) over HTTP Soft-AP or LAN.
+    UpdateFirmware(UpdateFirmwareArgs),
     /// Blink a device's LED so an operator can find it.
     Identify(IdentifyArgs),
     /// Report radio/link state.
@@ -56,6 +69,8 @@ pub enum Command {
     Hello(CommonArgs),
     /// Inspect or control a running job.
     Job(JobArgs),
+    /// Run a standalone Soft-AP HTTP mock for one driver (no daemon).
+    Fake(FakeArgs),
 }
 
 /// Shared client-side flags.
@@ -64,17 +79,59 @@ pub struct ClientCommon {
     /// Emit machine-readable JSON instead of human-readable text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Per-operation timeout (e.g. `30s`).
+    /// Per-operation timeout (e.g. `30s`). Default 10s; `update-firmware`
+    /// uses 180s (USB) or 120s (HTTP) when omitted.
     #[arg(long, global = true)]
     pub timeout: Option<humantime::Duration>,
 }
 
 /// Arguments for subcommands that take only the shared client flags
-/// (`scan`, `link-status`, `hello`).
+/// (`link-status`, `hello`).
 #[derive(Debug, Parser)]
 pub struct CommonArgs {
     #[command(flatten)]
     pub common: ClientCommon,
+}
+
+/// `scan` arguments.
+#[derive(Debug, Parser)]
+pub struct ScanArgs {
+    #[command(flatten)]
+    pub common: ClientCommon,
+    /// `ap` (Soft-AP radio, default), `lan` (mDNS `_longfred-ota._tcp`), or `usb`.
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan", "usb"])]
+    pub mode: String,
+}
+
+/// `update-firmware` arguments.
+#[derive(Debug, Parser)]
+pub struct UpdateFirmwareArgs {
+    #[command(flatten)]
+    pub common: ClientCommon,
+    /// `ap` (Soft-AP, default), `lan` (layout Wi‑Fi), or `usb` (`espflash`).
+    #[arg(long, default_value = "ap", value_parser = ["ap", "lan", "usb"])]
+    pub mode: String,
+    /// Driver identifier (default `longfred`).
+    #[arg(long, default_value = "longfred")]
+    pub driver: String,
+    /// Candidate key (BSSID in AP mode, IPv4 in LAN mode, serial device in USB mode).
+    #[arg(long)]
+    pub key: Option<String>,
+    /// LAN IPv4 (skips mDNS). Implies `--mode lan` when set alone with `--file`.
+    #[arg(long)]
+    pub host: Option<String>,
+    /// USB serial device (e.g. `/dev/ttyACM0`). Implies `--mode usb`.
+    #[arg(long)]
+    pub port: Option<String>,
+    /// CSV partition table for ELF USB flashes (default: `partitions.csv` next to `--file`).
+    #[arg(long)]
+    pub partition_table: Option<PathBuf>,
+    /// Path to a LongFred image (`.app.bin`, merged `.bin`, or ELF).
+    #[arg(long)]
+    pub file: PathBuf,
+    /// Do not stream job progress after starting the job.
+    #[arg(long)]
+    pub no_watch: bool,
 }
 
 /// `probe` arguments.

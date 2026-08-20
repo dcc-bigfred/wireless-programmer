@@ -46,12 +46,13 @@ c := &client.Client{
 `Socket` defaults to `DefaultSocket` when empty; `Timeout` defaults to 10s
 when zero. Override `Dial` in tests to point at an in-memory listener.
 
-The socket is mode `0660`, owned by the primary group of the daemon's first
-allowlisted user (`bigfred` by default), so the calling process must be that
-user or in that group. A `permission denied` from `Dial` means the caller is
-outside the group — the daemon's `SO_PEERCRED` allowlist never gets a chance to
-run, so widening it does not help. See the permissions section of
-[`api.md`](api.md).
+The socket is mode `0666` when peer auth is off (the default). With
+`--require-auth` it is `0660`, owned by the primary group of the daemon's
+first allowlisted user (`bigfred` by default), so the calling process must
+be that user or in that group. A `permission denied` from `Dial` means the
+caller is outside the group — the daemon's `SO_PEERCRED` allowlist never
+gets a chance to run, so widening it does not help. See the permissions
+section of [`api.md`](api.md).
 
 ## Methods
 
@@ -62,9 +63,11 @@ failure (see [Errors](#errors)).
 | Method | Wire method | Returns |
 |--------|-------------|---------|
 | `Hello()` | `hello` | `*HelloResult` (version + drivers) |
-| `Scan()` | `scan` | `[]CandidateWire` |
+| `Scan()` | `scan` | `[]CandidateWire` (Soft-AP) |
+| `ScanMode(mode)` | `scan` | `[]CandidateWire` (`ap`, `lan`, or `usb`) |
 | `Probe(candidate)` | `probe` | `*DeviceInfoWire` |
 | `Program(candidate, req)` | `program` | `*ProgramResult` (job id) |
+| `UpdateFirmware(mode, candidate, path, host, port, partitionTable)` | `updateFirmware` | `*ProgramResult` (job id) |
 | `JobGet(jobID)` | `job.get` | `*JobSnapshot` |
 | `JobCancel(jobID)` | `job.cancel` | `*JobSnapshot` |
 | `Identify(candidate, count)` | `identify` | `nil` |
@@ -128,7 +131,9 @@ like the one above to set them.
 
 `JobWatch` opens a streaming connection and returns it; the caller drains
 `JobFrame`s with `ReadFrame`, which sets a per-frame idle read deadline of
-`Timeout`. Close the conn when done.
+`Timeout`. Close the conn when done. Firmware jobs heartbeat every 3s, so
+the default 10s `Timeout` is enough during USB `espflash` or HTTP OTA.
+`JobCancel` stops `espflash` and an in-flight firmware POST.
 
 ```go
 conn, err := c.JobWatch(jobID)

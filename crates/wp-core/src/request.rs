@@ -11,9 +11,9 @@ pub struct WifiCredentials<'a> {
 
 /// wiThrottle server endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ThrottleServer {
+pub struct ThrottleServer<'a> {
     /// Hostname or IP.
-    pub host: &'static str,
+    pub host: &'a str,
     /// TCP port.
     pub port: u16,
     /// Discover via mDNS instead of a fixed host.
@@ -62,7 +62,7 @@ pub struct ProgramRequest<'a> {
     /// WiFi network the device should join after programming.
     pub wifi: WifiCredentials<'a>,
     /// wiThrottle server the device should connect to.
-    pub server: ThrottleServer,
+    pub server: ThrottleServer<'a>,
     /// DCC vehicle list (capped by the driver's `max_roster_slots`).
     pub roster: Vec<RosterEntry<'a>>,
     /// Optional BigFred login+PIN (LongFred and similar).

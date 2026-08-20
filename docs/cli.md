@@ -9,21 +9,39 @@ wireless-programmer [OPTIONS] [COMMAND]
 
 Commands:
   daemon        Run the IPC daemon (default when no subcommand is given)
-  scan          Enumerate candidate devices on the radio
-  probe         Read a single candidate's device info
-  program       Start a programming job and stream its progress
-  identify      Blink a device's LED so an operator can find it
+  scan             Enumerate candidate devices (Soft-AP radio or LAN mDNS)
+  probe            Read a single candidate's device info
+  program          Start a programming job and stream its progress
+  update-firmware  Upload a firmware image (Soft-AP, LAN, or USB espflash)
+  identify         Blink a device's LED so an operator can find it
   link-status   Report radio/link state
   hello         Exchange version + driver capabilities
   job           Inspect or control a running job
+  fake          Standalone Soft-AP HTTP mock for one driver (no daemon)
 
 Options:
       --socket <SOCKET>       Override the daemon socket path (every subcommand)
-  -i, --interface <IFACE>     Wireless interface for the daemon (e.g. wlan0)
+  -i, --interface <IFACE>     Wireless interface for the daemon (e.g. wlan0);
+                              use `fake` for in-process FakeRadio + Soft-AP mock
+      --require-auth          Enforce SO_PEERCRED allowlist (daemon only; off by default)
+      --allow-users <USERS>   Comma-separated allowlist (implies --require-auth)
   -v, --verbose               Verbose logging (daemon only)
   -h, --help                  Print help
   -V, --version               Print version
 ```
+
+### `daemon --interface fake`
+
+Runs the full IPC daemon with `FakeRadio` (scan returns one WiFred and one
+LongFred candidate) and an in-process Soft-AP HTTP mock on
+`127.0.0.1:<port>` (default port 8070; override with
+`--fake-webserver-port` / `WIRELESS_PROGRAMMER_FAKE_WEB_PORT`). Peer auth is
+forced off. Useful for developing `bigfred-wizard` without WiFi hardware.
+
+### `fake --driver wifred|longfred`
+
+Starts **only** the Soft-AP HTTP mock for the chosen driver (no radio, no
+IPC). Default bind `127.0.0.1:8070`.
 
 ## Socket resolution
 
@@ -34,18 +52,21 @@ Client subcommands connect to the daemon socket, resolved in this order:
 3. `$DATA_DIR/run/wireless-programmer/wireless-programmer.sock`;
 4. `/data/run/wireless-programmer/wireless-programmer.sock`.
 
-The daemon creates the parent directory and binds the socket with mode
-`0660`. Peers are checked via `SO_PEERCRED` against an allowlist (default
-`bigfred`, `bigfred-wizard`); override it with
-`WIRELESS_PROGRAMMER_ALLOW_USERS=alice,bob` (comma-separated login names).
+The daemon creates the parent directory and binds the socket. **Peer
+authentication is off by default**: the socket is `0666` and any local
+process may connect. Enable auth with `--require-auth` or
+`WIRELESS_PROGRAMMER_REQUIRE_AUTH=1`; then the socket is `0660` and peers
+are checked via `SO_PEERCRED` against an allowlist (default `bigfred`,
+`bigfred-wizard`, override with `--allow-users` /
+`WIRELESS_PROGRAMMER_ALLOW_USERS`).
 
-Because the mode is `0660`, the socket also needs a group owner, or a
-non-root client is refused by the filesystem before `SO_PEERCRED` is ever
-consulted. On startup the daemon chowns the socket to the primary group of
-the first allowlist entry (so `bigfred` by default); set
+When auth is on, the socket also needs a group owner, or a non-root client
+is refused by the filesystem before `SO_PEERCRED` is ever consulted. On
+startup the daemon chowns the socket to the primary group of the first
+allowlist entry (so `bigfred` by default); set
 `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` to choose a different login name
 whose primary group should own it. If that user does not exist, or the
-daemon is not privileged enough to chown, it logs a warning and leaves the
+daemon is not privileged enough to chown, it warns and leaves the
 socket owner-only — useful on a development machine, fatal for peers.
 
 ## Wireless interface
@@ -67,7 +88,11 @@ fails at start-up with a non-zero exit. The same choice can be set with
 Every client subcommand accepts:
 
 - `--json` — emit machine-readable JSON instead of human-readable text;
-- `--timeout 30s` — per-operation timeout (parsed by `humantime`, default 10s);
+- `--timeout 30s` — per-operation timeout (parsed by `humantime`, default 10s).
+  For `update-firmware` the default is 180s in USB mode and 120s over HTTP,
+  matching the `espflash` / firmware POST deadline. The daemon also emits a
+  `job.watch` detail frame every 3s during those transfers, so a 10s idle
+  client (including the Go SDK) still sees progress;
 - `--socket PATH` — override the daemon socket path.
 
 ## Discovery workflow
@@ -76,11 +101,17 @@ Every client subcommand accepts:
 # 1. What drivers does this daemon know?
 wireless-programmer hello
 
-# 2. Bring the radio up and scan for config APs.
+# 2. Bring the radio up and scan for config APs (Soft-AP, default).
 wireless-programmer scan
 # DRIVER     KEY                  RSSI     LABEL
 # wifred     AA:BB:CC:DD:EE:01    -54      wiFred-config-AABBCCDDEE01
 # wifred     AA:BB:CC:DD:EE:02    -61      wiFred-config-AABBCCDDEE02
+
+# LAN scan (LongFred HTTP OTA via mDNS `_longfred-ota._tcp`):
+wireless-programmer scan --mode lan
+
+# USB serial ports (`espflash list-ports` / `/dev/ttyUSB*` / `ttyACM*`):
+wireless-programmer scan --mode usb
 
 # 3. Read one device's current config over the radio.
 wireless-programmer probe --driver wifred --key AA:BB:CC:DD:EE:01
@@ -95,6 +126,46 @@ nothing matches; pipe `--json` for scripting:
 ```bash
 wireless-programmer scan --json | jq '.[] | select(.rssi != null) | .key'
 ```
+
+## Firmware update
+
+`update-firmware` uploads a LongFred image. Soft-AP and LAN POST
+`.app.bin` to `POST /api/v1/firmware` (120 s, not retried). USB runs
+`espflash` on a serial port (ELF, merged `.bin`, or `.app.bin`). WiFred
+does not support firmware upload.
+
+Use `--mode ap` after putting the throttle into Soft-AP programming mode
+(8-second chord). Use `--mode lan` when the throttle is already on the
+layout Wi‑Fi and the operator has opened **Firmware update** in the Extras
+menu (HTTP is enabled only while that screen is shown). Use `--mode usb`
+with the throttle on a USB-UART (or native USB-Serial-JTAG) cable;
+`espflash` must be on `PATH`.
+
+```bash
+# Soft-AP: join longfred_prog_*, POST the image, keep programming_mode.
+wireless-programmer update-firmware --mode ap --driver longfred \
+  --key AA:BB:CC:DD:EE:01 --file longfred-markwtech-esp32c6.app.bin
+
+# LAN: no radio; HTTP to the IPv4 from scan --mode lan (or --host).
+wireless-programmer update-firmware --mode lan --driver longfred \
+  --key 192.168.1.42 --file longfred-markwtech-esp32c6.app.bin
+wireless-programmer update-firmware --mode lan --host 192.168.1.42 \
+  --file longfred-markwtech-esp32c6.app.bin
+
+# USB: first install of the dual-slot table, or a cable update.
+wireless-programmer scan --mode usb
+wireless-programmer update-firmware --mode usb --port /dev/ttyUSB0 \
+  --file longfred-markwtech-esp32c6.elf --partition-table partitions.csv
+wireless-programmer update-firmware --mode usb --port /dev/ttyACM0 \
+  --file longfred-markwtech-esp32c6.bin
+```
+
+Like `program`, the command watches the job by default; `--no-watch`
+returns the job id immediately. While `espflash` or the HTTP POST is
+running, the daemon writes a detail frame every 3 seconds (for example
+`espflash /dev/ttyUSB0 (12s)`). `job cancel` requests cancellation: it
+kills the `espflash` child and aborts an in-flight firmware POST, but
+the radio slot stays busy until the worker reaches a terminal state.
 
 ## Programming workflow
 
@@ -219,10 +290,13 @@ wireless-programmer job cancel  --id <id>     # request cancellation
 its own line.
 
 If no frame arrives within the timeout, the client reports `no job progress
-frame within <timeout>` rather than a bare I/O error. Note that the daemon's
-worker loop is hardware-gated: until it drives a live radio, `job.watch`
-answers with a single snapshot frame and then goes quiet, so watching a job on
-a device-less host reaches that idle deadline by design.
+frame within <timeout>` rather than a bare I/O error. Firmware jobs keep the
+stream alive with a detail frame every 3 seconds, so watching
+`update-firmware` does not depend on raising `--timeout` unless you are
+talking to an older daemon. Note that the daemon's worker loop is
+hardware-gated: until it drives a live radio, `job.watch` answers with a
+single snapshot frame and then goes quiet, so watching a job on a
+device-less host reaches that idle deadline by design.
 
 ## Link status
 
@@ -256,8 +330,9 @@ remain machine-parseable.
 |----------|---------|
 | `BIGFRED_DATA_DIR` | Data root (default `/data`); socket is `<dir>/run/wireless-programmer/wireless-programmer.sock` |
 | `DATA_DIR` | Fallback data root |
-| `WIRELESS_PROGRAMMER_ALLOW_USERS` | Comma-separated peer allowlist (daemon only) |
-| `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` | Login name whose primary group owns the socket (daemon only; defaults to the first allowlist entry) |
+| `WIRELESS_PROGRAMMER_REQUIRE_AUTH` | Enable peer auth (`1`/`true`/`yes`/`on`); default off |
+| `WIRELESS_PROGRAMMER_ALLOW_USERS` | Comma-separated peer allowlist (used when auth is on; default `bigfred,bigfred-wizard`) |
+| `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` | Login name whose primary group owns the socket (daemon only; defaults to the first allowlist entry when auth is on) |
 | `WIRELESS_PROGRAMMER_INTERFACE` | Wireless interface name for the daemon (e.g. `wlan0`); overridden by `--interface` |
 | `WIRELESS_PROGRAMMER_GIT_COMMIT` | Git commit baked into the `hello` response (build-time) |
 | `WIRELESS_PROGRAMMER_BUILD_TIME` | UTC build timestamp baked into version metadata (build-time, optional) |

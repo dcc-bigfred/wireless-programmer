@@ -28,8 +28,14 @@ pub const MAX_FUNCTION: u8 = 0;
 /// Settings read endpoint.
 pub const SETTINGS_PATH: &str = "/api/v1/settings";
 
+/// Firmware upload endpoint (raw `.app.bin`).
+pub const FIRMWARE_PATH: &str = "/api/v1/firmware";
+
 /// Exit programming mode endpoint.
 pub const PROGRAMMING_MODE_OFF_PATH: &str = "/api/v1/programming-mode/off";
 
 /// JSON content type for PUT bodies.
 pub const JSON_CONTENT_TYPE: &str = "application/json";
+
+/// Firmware POST content type.
+pub const FIRMWARE_CONTENT_TYPE: &str = "application/octet-stream";

@@ -38,12 +38,13 @@ type CommissioningKindWire string
 
 // CapabilitiesWire mirrors wp_proto::CapabilitiesWire.
 type CapabilitiesWire struct {
-	MaxRosterSlots         uint8                  `json:"maxRosterSlots"`
-	MaxFunctionIndex       uint8                  `json:"maxFunctionIndex"`
-	IdentityFormat         IdentityFormatWire     `json:"identityFormat"`
-	SupportsThrottleServer bool                   `json:"supportsThrottleServer"`
-	Commissioning          CommissioningKindWire  `json:"commissioning"`
-	CommissioningNet       *CommissioningNetWire  `json:"commissioningNet,omitempty"`
+	MaxRosterSlots         uint8                 `json:"maxRosterSlots"`
+	MaxFunctionIndex       uint8                 `json:"maxFunctionIndex"`
+	IdentityFormat         IdentityFormatWire    `json:"identityFormat"`
+	SupportsThrottleServer bool                  `json:"supportsThrottleServer"`
+	SupportsFirmwareUpdate bool                  `json:"supportsFirmwareUpdate"`
+	Commissioning          CommissioningKindWire `json:"commissioning"`
+	CommissioningNet       *CommissioningNetWire `json:"commissioningNet,omitempty"`
 }
 
 // CommissioningNetWire mirrors wp_proto::CommissioningNetWire.
@@ -103,21 +104,21 @@ type FunctionMappingWire struct {
 
 // RosterEntryWire mirrors wp_proto::RosterEntryWire.
 type RosterEntryWire struct {
-	Address     *uint16                `json:"address,omitempty"`
-	LongAddress *bool                  `json:"longAddress,omitempty"`
-	Mode        string                 `json:"mode,omitempty"`
-	Direction   *uint8                 `json:"direction,omitempty"`
-	Functions   []FunctionMappingWire  `json:"functions,omitempty"`
+	Address     *uint16               `json:"address,omitempty"`
+	LongAddress *bool                 `json:"longAddress,omitempty"`
+	Mode        string                `json:"mode,omitempty"`
+	Direction   *uint8                `json:"direction,omitempty"`
+	Functions   []FunctionMappingWire `json:"functions,omitempty"`
 }
 
 // ProgramRequestWire mirrors wp_proto::ProgramRequestWire.
 type ProgramRequestWire struct {
-	Identity   string               `json:"identity"`
-	Wifi       WifiCredentialsWire  `json:"wifi"`
-	Server     ThrottleServerWire   `json:"server"`
-	Roster     []RosterEntryWire    `json:"roster"`
-	Bigfred    *BigfredCredsWire    `json:"bigfred,omitempty"`
-	RosterMode string               `json:"rosterMode,omitempty"`
+	Identity   string              `json:"identity"`
+	Wifi       WifiCredentialsWire `json:"wifi"`
+	Server     ThrottleServerWire  `json:"server"`
+	Roster     []RosterEntryWire   `json:"roster"`
+	Bigfred    *BigfredCredsWire   `json:"bigfred,omitempty"`
+	RosterMode string              `json:"rosterMode,omitempty"`
 }
 
 // BigfredCredsWire mirrors wp_proto::BigfredCredsWire.
@@ -192,10 +193,15 @@ type request struct {
 }
 
 type requestParams struct {
-	Candidate *CandidateRef       `json:"candidate,omitempty"`
-	Request   *ProgramRequestWire `json:"request,omitempty"`
-	JobID     string              `json:"jobId,omitempty"`
-	Count     *uint32             `json:"count,omitempty"`
+	Candidate      *CandidateRef       `json:"candidate,omitempty"`
+	Request        *ProgramRequestWire `json:"request,omitempty"`
+	JobID          string              `json:"jobId,omitempty"`
+	Count          *uint32             `json:"count,omitempty"`
+	Mode           string              `json:"mode,omitempty"`
+	Path           string              `json:"path,omitempty"`
+	Host           string              `json:"host,omitempty"`
+	Port           string              `json:"port,omitempty"`
+	PartitionTable string              `json:"partitionTable,omitempty"`
 }
 
 // Client dials the wireless-programmer Unix socket.
@@ -252,10 +258,19 @@ func (c *Client) Hello() (*HelloResult, error) {
 	return &out, nil
 }
 
-// Scan enumerates candidate devices on the radio.
+// Scan enumerates candidate devices on the radio (Soft-AP).
 func (c *Client) Scan() ([]CandidateWire, error) {
+	return c.ScanMode("ap")
+}
+
+// ScanMode enumerates candidates. mode is "ap" (radio Soft-AP), "lan" (mDNS), or "usb".
+func (c *Client) ScanMode(mode string) ([]CandidateWire, error) {
+	var params *requestParams
+	if mode != "" && mode != "ap" {
+		params = &requestParams{Mode: mode}
+	}
 	var resp Response
-	if err := c.roundTrip(request{Type: "scan"}, &resp); err != nil {
+	if err := c.roundTrip(request{Type: "scan", Params: params}, &resp); err != nil {
 		return nil, err
 	}
 	if resp.Type == "error" {
@@ -269,6 +284,34 @@ func (c *Client) Scan() ([]CandidateWire, error) {
 		return nil, fmt.Errorf("decode scan: %w", err)
 	}
 	return out, nil
+}
+
+// UpdateFirmware queues a firmware-upload job (image path on the hub).
+// mode is "ap", "lan", or "usb". host is an optional LAN IPv4; port is a USB serial device.
+func (c *Client) UpdateFirmware(mode string, candidate *CandidateRef, path, host, port, partitionTable string) (*ProgramResult, error) {
+	params := &requestParams{
+		Mode:           mode,
+		Path:           path,
+		Host:           host,
+		Port:           port,
+		PartitionTable: partitionTable,
+		Candidate:      candidate,
+	}
+	var resp Response
+	if err := c.roundTrip(request{Type: "updateFirmware", Params: params}, &resp); err != nil {
+		return nil, err
+	}
+	if resp.Type == "error" {
+		return nil, responseError(resp)
+	}
+	if resp.Type != "updateFirmware" {
+		return nil, fmt.Errorf("unexpected response type %q", resp.Type)
+	}
+	var out ProgramResult
+	if err := json.Unmarshal(resp.Result, &out); err != nil {
+		return nil, fmt.Errorf("decode updateFirmware: %w", err)
+	}
+	return &out, nil
 }
 
 // Probe reads a single candidate's device info.

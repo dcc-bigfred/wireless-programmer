@@ -112,12 +112,49 @@ impl Client {
 
     /// `scan`: enumerate candidate devices on the radio.
     pub fn scan(&self) -> Result<Vec<CandidateWire>, ClientError> {
+        self.scan_mode(wp_proto::ReachMode::Ap)
+    }
+
+    /// `scan` with an explicit reach mode (`ap` or `lan`).
+    pub fn scan_mode(&self, mode: wp_proto::ReachMode) -> Result<Vec<CandidateWire>, ClientError> {
+        let params = if mode == wp_proto::ReachMode::Ap {
+            Some(Params::None)
+        } else {
+            Some(Params::Scan(wp_proto::ScanParams { mode }))
+        };
         let resp = self.round_trip(&Request {
             kind: RequestKind::Scan,
-            params: Some(Params::None),
+            params,
         })?;
         match self.expect_result(resp, RequestKind::Scan)? {
             ResultBody::Scan(c) => Ok(c),
+            other => Err(unexpected_body(other)),
+        }
+    }
+
+    /// `updateFirmware`: queue a firmware-upload job.
+    pub fn update_firmware(
+        &self,
+        mode: wp_proto::ReachMode,
+        candidate: Option<CandidateRef>,
+        path: impl Into<String>,
+        host: Option<String>,
+        port: Option<String>,
+        partition_table: Option<String>,
+    ) -> Result<ProgramResult, ClientError> {
+        let resp = self.round_trip(&Request {
+            kind: RequestKind::UpdateFirmware,
+            params: Some(Params::UpdateFirmware(wp_proto::UpdateFirmwareParams {
+                mode,
+                candidate,
+                path: path.into(),
+                host,
+                port,
+                partition_table,
+            })),
+        })?;
+        match self.expect_result(resp, RequestKind::UpdateFirmware)? {
+            ResultBody::UpdateFirmware(p) | ResultBody::Program(p) => Ok(p),
             other => Err(unexpected_body(other)),
         }
     }

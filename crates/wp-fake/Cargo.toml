@@ -1,0 +1,29 @@
+[package]
+name = "wp-fake"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Fake radio and Soft-AP HTTP device mocks for wireless-programmer"
+
+[lib]
+name = "wp_fake"
+path = "src/lib.rs"
+
+[dependencies]
+wp-core = { path = "../wp-core" }
+wp-link = { path = "../wp-link" }
+wp-drivers = { path = "../wp-drivers" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["net", "io-util", "sync", "macros", "rt", "time"] }
+quick-xml = { version = "0.36", features = ["serialize"] }
+log = "0.4"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }
+
+[lints]
+workspace = true
