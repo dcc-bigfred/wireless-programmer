@@ -24,8 +24,7 @@ pub struct ScanResult {
 }
 
 /// Boxed future returned by [`Radio`] methods (dyn-compatible).
-pub type RadioFut<'a, T> =
-    Pin<Box<dyn Future<Output = Result<T, DriverError>> + Send + 'a>>;
+pub type RadioFut<'a, T> = Pin<Box<dyn Future<Output = Result<T, DriverError>> + Send + 'a>>;
 
 /// The async radio contract. Implementations use nl80211 + rtnetlink.
 ///
@@ -39,11 +38,7 @@ pub trait Radio: Send {
     fn connect_open(&mut self, ssid: &str, bssid: Option<[u8; 6]>) -> RadioFut<'_, ()>;
 
     /// Assign `addr/prefix_len` to the wireless interface (on-link route only).
-    fn set_address(
-        &mut self,
-        addr: std::net::Ipv4Addr,
-        prefix_len: u8,
-    ) -> RadioFut<'_, ()>;
+    fn set_address(&mut self, addr: std::net::Ipv4Addr, prefix_len: u8) -> RadioFut<'_, ()>;
 
     /// Bring the link up.
     fn link_up(&mut self) -> RadioFut<'_, ()>;
@@ -313,11 +308,7 @@ impl Radio for Nl80211Radio {
         })
     }
 
-    fn set_address(
-        &mut self,
-        addr: std::net::Ipv4Addr,
-        prefix_len: u8,
-    ) -> RadioFut<'_, ()> {
+    fn set_address(&mut self, addr: std::net::Ipv4Addr, prefix_len: u8) -> RadioFut<'_, ()> {
         let if_index = self.if_index;
         Box::pin(async move {
             use rtnetlink::new_connection;
@@ -437,8 +428,8 @@ mod tests {
     fn ssid_from_ies_reads_test_wifi() {
         // IE: id=0, len=9, "Test-WIFI"
         let ies = [
-            0u8, 9, b'T', b'e', b's', b't', b'-', b'W', b'I', b'F', b'I', 1, 8, 130, 132, 139,
-            150, 12, 18, 24, 36,
+            0u8, 9, b'T', b'e', b's', b't', b'-', b'W', b'I', b'F', b'I', 1, 8, 130, 132, 139, 150,
+            12, 18, 24, 36,
         ];
         assert_eq!(ssid_from_ies(&ies).as_deref(), Some("Test-WIFI"));
     }

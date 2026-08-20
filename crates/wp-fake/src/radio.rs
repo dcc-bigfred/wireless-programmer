@@ -64,11 +64,7 @@ impl Radio for FakeRadio {
         Box::pin(async move { Ok(()) })
     }
 
-    fn set_address(
-        &mut self,
-        _addr: std::net::Ipv4Addr,
-        _prefix_len: u8,
-    ) -> RadioFut<'_, ()> {
+    fn set_address(&mut self, _addr: std::net::Ipv4Addr, _prefix_len: u8) -> RadioFut<'_, ()> {
         self.record("set_address");
         Box::pin(async move { Ok(()) })
     }

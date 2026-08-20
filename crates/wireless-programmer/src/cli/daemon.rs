@@ -206,16 +206,14 @@ fn spawn_fake_from_std_listener(
     let device: Arc<tokio::sync::Mutex<dyn wp_fake::FakeDevice>> =
         Arc::new(tokio::sync::Mutex::new(wp_fake::CompositeFakeDevice::all()));
     // `TcpListener::from_std` needs a Tokio reactor — enter via the daemon runtime.
-    runtime
-        .handle()
-        .block_on(async move {
-            let listener =
-                tokio::net::TcpListener::from_std(std_listener).map_err(|e| e.to_string())?;
-            tokio::spawn(async move {
-                if let Err(e) = wp_fake::FakeHttpServer::serve(listener, device).await {
-                    tracing::error!("fake Soft-AP HTTP mock stopped: {e}");
-                }
-            });
-            Ok::<(), String>(())
-        })
+    runtime.handle().block_on(async move {
+        let listener =
+            tokio::net::TcpListener::from_std(std_listener).map_err(|e| e.to_string())?;
+        tokio::spawn(async move {
+            if let Err(e) = wp_fake::FakeHttpServer::serve(listener, device).await {
+                tracing::error!("fake Soft-AP HTTP mock stopped: {e}");
+            }
+        });
+        Ok::<(), String>(())
+    })
 }

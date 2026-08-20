@@ -133,15 +133,11 @@ impl WifredFake {
                     let index: u8 = other[1..].parse().unwrap_or(0);
                     let fval: u8 = value.parse().unwrap_or(0);
                     if let Some(loco) = self.active_loco_mut() {
-                        if let Some(existing) =
-                            loco.functions.iter_mut().find(|f| f.index == index)
+                        if let Some(existing) = loco.functions.iter_mut().find(|f| f.index == index)
                         {
                             existing.value = fval;
                         } else {
-                            loco.functions.push(FunctionEntry {
-                                index,
-                                value: fval,
-                            });
+                            loco.functions.push(FunctionEntry { index, value: fval });
                         }
                     }
                 }
