@@ -25,6 +25,4 @@ pub use radio::{
     resolve_wireless_interface, Nl80211Radio, Radio, RadioFut, ScanResult,
 };
 pub use rfkill::{aggregate_state, RfkillState};
-pub use z21::{
-    discover_z21, dispatch_addr, DispatchError, DispatchOutcome, Z21Host, Z21_UDP_PORT,
-};
+pub use z21::{discover_z21, dispatch_addr, DispatchError, DispatchOutcome, Z21Host, Z21_UDP_PORT};

@@ -463,10 +463,7 @@ mod tests {
             Z21Host::normalize_key("192.168.0.111:21106"),
             "192.168.0.111:21106"
         );
-        assert_eq!(
-            Z21Host::normalize_key("z21.local:21105"),
-            "z21.local:21105"
-        );
+        assert_eq!(Z21Host::normalize_key("z21.local:21105"), "z21.local:21105");
         assert_eq!(Z21Host::normalize_key("z21.local"), "z21.local:21105");
     }
 }
