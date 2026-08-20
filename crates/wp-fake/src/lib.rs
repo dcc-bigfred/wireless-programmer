@@ -8,6 +8,7 @@ mod longfred;
 mod radio;
 mod server;
 mod wifred;
+mod z21;
 
 pub use composite::CompositeFakeDevice;
 pub use device::{not_found, ok_json, ok_text, ok_xml, FakeDevice, FakeRequest, FakeResponse};
@@ -15,3 +16,4 @@ pub use longfred::LongFredFake;
 pub use radio::FakeRadio;
 pub use server::{bind_and_serve, FakeHttpServer};
 pub use wifred::WifredFake;
+pub use z21::{FakeZ21, FakeZ21Mode};

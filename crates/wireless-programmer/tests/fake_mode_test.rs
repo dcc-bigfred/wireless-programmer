@@ -4,7 +4,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use wp_fake::{CompositeFakeDevice, FakeRadio};
+use wp_fake::{CompositeFakeDevice, FakeRadio, FakeZ21, FakeZ21Mode};
 use wp_proto::{ProgramRequestWire, RosterEntryWire, ThrottleServerWire, WifiCredentialsWire};
 
 use wireless_programmer::config::Config;
@@ -108,6 +108,23 @@ fn longfred_request() -> ProgramRequestWire {
     }
 }
 
+fn fred_request(addr: u16) -> ProgramRequestWire {
+    ProgramRequestWire {
+        identity: String::new(),
+        wifi: WifiCredentialsWire::default(),
+        server: ThrottleServerWire::default(),
+        roster: vec![RosterEntryWire {
+            address: Some(addr),
+            long_address: None,
+            mode: None,
+            direction: None,
+            functions: Vec::new(),
+        }],
+        bigfred: None,
+        roster_mode: None,
+    }
+}
+
 fn wait_terminal(rt: &Runtime, id: &wireless_programmer::jobs::JobId) -> JobState {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
@@ -188,4 +205,73 @@ fn fake_identify_wifred() {
     let c = found.iter().find(|c| c.driver == "wifred").expect("wifred");
     rt.identify(Driver::WiFred, &c.key, Some(3))
         .expect("identify");
+}
+
+#[test]
+fn fake_program_fred_dispatch_reaches_done() {
+    let fake = FakeZ21::spawn(FakeZ21Mode::Accept).unwrap();
+    let rt = setup_runtime();
+    let key = fake.addr().to_string();
+    let id = rt
+        .submit_program(Driver::Fred, &key, fred_request(42))
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    assert_eq!(state, JobState::Done, "detail={snap:?}");
+    assert_eq!(
+        snap.as_ref().and_then(|s| s.detail.as_deref()),
+        Some("slot 3")
+    );
+    assert!(fake.dispatch_count() >= 1);
+}
+
+#[test]
+fn fake_program_fred_reject_fails() {
+    let fake = FakeZ21::spawn(FakeZ21Mode::Reject).unwrap();
+    let rt = setup_runtime();
+    let key = fake.addr().to_string();
+    let id = rt
+        .submit_program(Driver::Fred, &key, fred_request(7))
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    assert_eq!(state, JobState::Failed, "detail={snap:?}");
+    assert_eq!(
+        snap.as_ref().and_then(|s| s.detail.as_deref()),
+        Some("dispatchFailed")
+    );
+}
+
+#[test]
+fn fake_program_fred_unknown_command_fails() {
+    let fake = FakeZ21::spawn(FakeZ21Mode::UnknownCommand).unwrap();
+    let rt = setup_runtime();
+    let key = fake.addr().to_string();
+    let id = rt
+        .submit_program(Driver::Fred, &key, fred_request(9))
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    assert_eq!(state, JobState::Failed, "detail={snap:?}");
+    assert_eq!(
+        snap.as_ref().and_then(|s| s.detail.as_deref()),
+        Some("z21NoLocoNet")
+    );
+}
+
+#[test]
+fn fake_program_fred_no_ack_reaches_done() {
+    let fake = FakeZ21::spawn(FakeZ21Mode::NoAck).unwrap();
+    let rt = setup_runtime();
+    let key = fake.addr().to_string();
+    let id = rt
+        .submit_program(Driver::Fred, &key, fred_request(99))
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    assert_eq!(state, JobState::Done, "detail={snap:?}");
+    assert_eq!(
+        snap.as_ref().and_then(|s| s.detail.as_deref()),
+        Some("noAck")
+    );
 }

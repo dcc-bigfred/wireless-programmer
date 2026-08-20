@@ -13,6 +13,9 @@ use socket2::{Domain, Protocol, Socket, Type};
 /// LongFred STA HTTP OTA service.
 pub const OTA_HTTP_SERVICE: &str = "_longfred-ota._tcp.local";
 
+/// Z21 LAN protocol DNS-SD type (Roco Z21 / BigFred inbound / RB1110).
+pub const Z21_UDP_SERVICE: &str = "_z21._udp.local";
+
 const MDNS_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MDNS_PORT: u16 = 5353;
 const TYPE_A: u16 = 1;
@@ -51,8 +54,18 @@ fn mdns_listener() -> std::io::Result<UdpSocket> {
 /// Returns [`std::io::Error`] on socket failure (including inability to bind
 /// UDP 5353).
 pub fn discover_ota_hosts(wait: Duration) -> std::io::Result<Vec<OtaHost>> {
+    discover_mdns_hosts(OTA_HTTP_SERVICE, wait)
+}
+
+/// PTR-query `service` (e.g. [`Z21_UDP_SERVICE`]) and collect A/SRV answers.
+///
+/// # Errors
+///
+/// Returns [`std::io::Error`] on socket failure (including inability to bind
+/// UDP 5353).
+pub fn discover_mdns_hosts(service: &str, wait: Duration) -> std::io::Result<Vec<OtaHost>> {
     let sock = mdns_listener()?;
-    let q = ptr_query(OTA_HTTP_SERVICE);
+    let q = ptr_query(service);
     let _ = sock.send_to(&q, SocketAddrV4::new(MDNS_GROUP, MDNS_PORT));
 
     let deadline = Instant::now() + wait;
@@ -233,6 +246,9 @@ mod tests {
         assert!(q
             .windows(b"_longfred-ota".len())
             .any(|w| w == b"_longfred-ota"));
+        let z21 = ptr_query(Z21_UDP_SERVICE);
+        assert!(z21.windows(b"_z21".len()).any(|w| w == b"_z21"));
+        assert!(z21.windows(b"_udp".len()).any(|w| w == b"_udp"));
     }
 
     #[test]

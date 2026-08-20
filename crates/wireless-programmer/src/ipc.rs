@@ -228,6 +228,7 @@ impl ServerInner {
                 let scanned = match mode {
                     wp_proto::ReachMode::Lan => self.runtime.scan_lan(),
                     wp_proto::ReachMode::Usb => self.runtime.scan_usb(),
+                    wp_proto::ReachMode::Z21 => self.runtime.scan_z21(),
                     wp_proto::ReachMode::Ap => self.runtime.scan(),
                 };
                 match scanned {

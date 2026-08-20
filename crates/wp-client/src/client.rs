@@ -115,7 +115,7 @@ impl Client {
         self.scan_mode(wp_proto::ReachMode::Ap)
     }
 
-    /// `scan` with an explicit reach mode (`ap` or `lan`).
+    /// `scan` with an explicit reach mode (`ap`, `lan`, `usb`, or `z21`).
     pub fn scan_mode(&self, mode: wp_proto::ReachMode) -> Result<Vec<CandidateWire>, ClientError> {
         let params = if mode == wp_proto::ReachMode::Ap {
             Some(Params::None)

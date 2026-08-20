@@ -263,7 +263,7 @@ func (c *Client) Scan() ([]CandidateWire, error) {
 	return c.ScanMode("ap")
 }
 
-// ScanMode enumerates candidates. mode is "ap" (radio Soft-AP), "lan" (mDNS), or "usb".
+// ScanMode enumerates candidates. mode is "ap" (radio Soft-AP), "lan" (mDNS), "usb", or "z21".
 func (c *Client) ScanMode(mode string) ([]CandidateWire, error) {
 	var params *requestParams
 	if mode != "" && mode != "ap" {
