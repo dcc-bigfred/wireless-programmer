@@ -68,24 +68,19 @@ impl DeviceDriver for FredDriver {
         }
     }
 
-    fn probe(
-        &self,
-        _transport: Transport<'_>,
-    ) -> impl std::future::Future<Output = Result<serde_json::Value, DriverError>> {
-        async { Ok(serde_json::json!({ "driver": "fred" })) }
+    async fn probe(&self, _transport: Transport<'_>) -> Result<serde_json::Value, DriverError> {
+        Ok(serde_json::json!({ "driver": "fred" }))
     }
 
-    fn program(
+    async fn program(
         &self,
         _transport: Transport<'_>,
         _req: &wp_core::ProgramRequest<'_>,
         _progress: &mut dyn ProgressSink,
-    ) -> impl std::future::Future<Output = Result<Outcome, DriverError>> {
-        async {
-            Err(DriverError::Other(
-                "fred programming uses Z21 UDP, not HTTP/serial".into(),
-            ))
-        }
+    ) -> Result<Outcome, DriverError> {
+        Err(DriverError::Other(
+            "fred programming uses Z21 UDP, not HTTP/serial".into(),
+        ))
     }
 }
 
