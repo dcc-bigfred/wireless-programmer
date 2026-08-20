@@ -39,6 +39,9 @@ pub struct CachedCandidate {
     pub rssi: Option<i32>,
     /// How this candidate was discovered.
     pub mode: ReachMode,
+    /// `true` when inserted manually (e.g. `cache_z21_host`) rather than by a
+    /// scan. Manual entries survive a rescan of the same mode.
+    pub manual: bool,
 }
 
 /// Shared handle used by IPC and the worker.
@@ -140,6 +143,7 @@ impl Runtime {
                     label: c.label,
                     rssi: c.rssi,
                     mode: ReachMode::Ap,
+                    manual: false,
                 };
                 cache.insert((c.driver, c.key), cached.clone());
                 out.push(cached);
@@ -164,6 +168,7 @@ impl Runtime {
                 label: format!("{} ({})", h.hostname, h.ipv4),
                 rssi: None,
                 mode: ReachMode::Lan,
+                manual: false,
             };
             cache.insert((cached.driver.clone(), key), cached.clone());
             out.push(cached);
@@ -186,6 +191,7 @@ impl Runtime {
                 label: p.label,
                 rssi: None,
                 mode: ReachMode::Usb,
+                manual: false,
             };
             cache.insert((cached.driver.clone(), cached.key.clone()), cached.clone());
             out.push(cached);
@@ -199,7 +205,9 @@ impl Runtime {
             .map_err(|e| wp_core::DriverError::Other(format!("z21 scan: {e}")))?;
         let mut out = Vec::new();
         let mut cache = self.cache.lock();
-        cache.retain(|_, v| v.mode != ReachMode::Z21);
+        // Clear scan-discovered Z21 entries but keep manually cached ones
+        // (e.g. from `cache_z21_host` when the operator passed `--key`).
+        cache.retain(|_, v| !(v.mode == ReachMode::Z21 && !v.manual));
         for h in hosts {
             let key = h.key();
             let cached = CachedCandidate {
@@ -210,6 +218,7 @@ impl Runtime {
                 label: h.label(),
                 rssi: None,
                 mode: ReachMode::Z21,
+                manual: false,
             };
             cache.insert((cached.driver.clone(), key), cached.clone());
             out.push(cached);
@@ -227,6 +236,7 @@ impl Runtime {
             label: label.unwrap_or(key).to_string(),
             rssi: None,
             mode: ReachMode::Z21,
+            manual: true,
         };
         self.cache
             .lock()
@@ -243,6 +253,7 @@ impl Runtime {
             label: label.unwrap_or(port).to_string(),
             rssi: None,
             mode: ReachMode::Usb,
+            manual: true,
         };
         self.cache
             .lock()
@@ -259,6 +270,7 @@ impl Runtime {
             label: label.unwrap_or(host).to_string(),
             rssi: None,
             mode: ReachMode::Lan,
+            manual: true,
         };
         self.cache
             .lock()
@@ -686,7 +698,23 @@ async fn run_job(rt: &Runtime, id: JobId) {
 }
 
 async fn run_fred_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire, key: &str) {
-    let Some(target) = wp_link::Z21Host::parse_key(key) else {
+    // Resolve `host:port` (or bare host → default port) via async DNS so
+    // hostnames work, not just IPs. `parse_key` is the IP-only fast path.
+    let target_str = wp_link::Z21Host::normalize_key(key);
+    let target = match tokio::net::lookup_host(&target_str).await {
+        Ok(mut addrs) => addrs.next(),
+        Err(e) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                None,
+                None,
+                Some(&format!("invalid Z21 address (want host:port): {e}")),
+            );
+            return;
+        }
+    };
+    let Some(target) = target else {
         rt.jobs.transition(
             &id,
             JobState::Failed,
@@ -696,12 +724,9 @@ async fn run_fred_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire,
         );
         return;
     };
-    let Some(loco) = wire
-        .roster
-        .first()
-        .and_then(|e| e.address)
-        .filter(|a| (1..=10239).contains(a))
-    else {
+    // validate() already enforced exactly one roster entry with an address in
+    // 1..=10239; this is a defensive guard against a missing address only.
+    let Some(loco) = wire.roster.first().and_then(|e| e.address) else {
         rt.jobs.transition(
             &id,
             JobState::Failed,
@@ -756,13 +781,8 @@ async fn run_fred_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire,
             );
         }
         Ok(wp_link::DispatchOutcome::NoAck) => {
-            rt.jobs.transition(
-                &id,
-                JobState::Done,
-                Some("done"),
-                Some(100),
-                Some("noAck"),
-            );
+            rt.jobs
+                .transition(&id, JobState::Done, Some("done"), Some(100), Some("noAck"));
         }
         Err(wp_link::DispatchError::Rejected) => {
             rt.jobs.transition(
@@ -780,6 +800,15 @@ async fn run_fred_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire,
                 Some("write"),
                 None,
                 Some("z21NoLocoNet"),
+            );
+        }
+        Err(wp_link::DispatchError::Unreachable(_)) => {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                Some("write"),
+                None,
+                Some("unreachable"),
             );
         }
         Err(e) => {

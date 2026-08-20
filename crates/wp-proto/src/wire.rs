@@ -201,6 +201,11 @@ pub struct CandidateRef {
 }
 
 /// The full programming request, in wire form.
+///
+/// `identity`, `wifi`, and `server` default to empty values so the FRED driver
+/// (which uses none of them — it programs over Z21 UDP) can submit a request
+/// with only a roster entry. This is additive: existing clients that always
+/// send these fields are unaffected.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgramRequestWire {

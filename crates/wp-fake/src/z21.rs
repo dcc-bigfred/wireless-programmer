@@ -49,9 +49,10 @@ impl FakeZ21 {
                 Ok((n, from)) => {
                     for rec in parse_records(&buf[..n]) {
                         let reply = match rec.header {
-                            HEADER_GET_SERIAL_NUMBER => {
-                                Some(encode(HEADER_GET_SERIAL_NUMBER, &0x00C0_FFEEu32.to_le_bytes()))
-                            }
+                            HEADER_GET_SERIAL_NUMBER => Some(encode(
+                                HEADER_GET_SERIAL_NUMBER,
+                                &0x00C0_FFEEu32.to_le_bytes(),
+                            )),
                             HEADER_LOCONET_DISPATCH_ADDR => {
                                 disp_t.fetch_add(1, Ordering::Relaxed);
                                 let loco = if rec.data.len() >= 2 {

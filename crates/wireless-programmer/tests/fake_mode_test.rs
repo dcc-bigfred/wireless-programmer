@@ -241,3 +241,37 @@ fn fake_program_fred_reject_fails() {
         Some("dispatchFailed")
     );
 }
+
+#[test]
+fn fake_program_fred_unknown_command_fails() {
+    let fake = FakeZ21::spawn(FakeZ21Mode::UnknownCommand).unwrap();
+    let rt = setup_runtime();
+    let key = fake.addr().to_string();
+    let id = rt
+        .submit_program(Driver::Fred, &key, fred_request(9))
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    assert_eq!(state, JobState::Failed, "detail={snap:?}");
+    assert_eq!(
+        snap.as_ref().and_then(|s| s.detail.as_deref()),
+        Some("z21NoLocoNet")
+    );
+}
+
+#[test]
+fn fake_program_fred_no_ack_reaches_done() {
+    let fake = FakeZ21::spawn(FakeZ21Mode::NoAck).unwrap();
+    let rt = setup_runtime();
+    let key = fake.addr().to_string();
+    let id = rt
+        .submit_program(Driver::Fred, &key, fred_request(99))
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    assert_eq!(state, JobState::Done, "detail={snap:?}");
+    assert_eq!(
+        snap.as_ref().and_then(|s| s.detail.as_deref()),
+        Some("noAck")
+    );
+}

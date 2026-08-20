@@ -71,12 +71,28 @@ impl Z21Host {
         }
     }
 
-    /// Parse a `host:port` candidate key.
+    /// Parse an `ip:port` (or bare IPv4, defaulting to [`Z21_UDP_PORT`]) candidate
+    /// key into a [`SocketAddr`].
+    ///
+    /// This is a synchronous IP-only fast path used by tests and the fake Z21.
+    /// For arbitrary hostnames use [`Z21Host::normalize_key`] plus async DNS
+    /// resolution (e.g. `tokio::net::lookup_host`) at the call site.
     pub fn parse_key(key: &str) -> Option<SocketAddr> {
         key.parse().ok().or_else(|| {
             let ip: Ipv4Addr = key.parse().ok()?;
             Some(SocketAddr::V4(SocketAddrV4::new(ip, Z21_UDP_PORT)))
         })
+    }
+
+    /// Normalize a candidate key to `host:port`, appending [`Z21_UDP_PORT`] when
+    /// no port is present. Accepts a hostname or IP (DNS resolution is the
+    /// caller's responsibility — use `tokio::net::lookup_host(&normalized)`).
+    pub fn normalize_key(key: &str) -> String {
+        if key.rsplit_once(':').is_some() {
+            key.to_string()
+        } else {
+            format!("{key}:{Z21_UDP_PORT}")
+        }
     }
 }
 
@@ -169,12 +185,22 @@ pub fn discover_z21(wait: Duration) -> std::io::Result<Vec<Z21Host>> {
     match discover_mdns_hosts(Z21_UDP_SERVICE, wait) {
         Ok(hosts) => {
             for h in hosts {
+                let port = if h.port == 0 {
+                    log::debug!(
+                        "z21 mdns: {} advertised without SRV port, defaulting to {}",
+                        h.ipv4,
+                        Z21_UDP_PORT
+                    );
+                    Z21_UDP_PORT
+                } else {
+                    h.port
+                };
                 push_host(
                     &mut found,
                     Z21Host {
                         hostname: h.hostname,
                         ipv4: h.ipv4,
-                        port: if h.port == 0 { Z21_UDP_PORT } else { h.port },
+                        port,
                         serial: None,
                     },
                 );
@@ -217,10 +243,7 @@ fn probe_serial_broadcast(wait: Duration) -> std::io::Result<Vec<Z21Host>> {
     sock.set_broadcast(true)?;
     sock.set_read_timeout(Some(Duration::from_millis(200)))?;
     let req = serial_number_request();
-    let _ = sock.send_to(
-        &req,
-        SocketAddrV4::new(Ipv4Addr::BROADCAST, Z21_UDP_PORT),
-    );
+    let _ = sock.send_to(&req, SocketAddrV4::new(Ipv4Addr::BROADCAST, Z21_UDP_PORT));
     let _ = sock.send_to(
         &req,
         SocketAddrV4::new(Ipv4Addr::BROADCAST, Z21_UDP_PORT_ALT),
@@ -284,6 +307,7 @@ pub fn dispatch_addr(
                         z21_alive = true;
                     }
                     if is_unknown_command(&rec) {
+                        let _ = sock.send_to(&logoff_request(), target);
                         return Err(DispatchError::UnknownCommand);
                     }
                 }
@@ -306,6 +330,7 @@ pub fn dispatch_addr(
             Ok((n, from)) if from == target || from.ip() == target.ip() => {
                 for rec in parse_records(&buf[..n]) {
                     if is_unknown_command(&rec) {
+                        let _ = sock.send_to(&logoff_request(), target);
                         return Err(DispatchError::UnknownCommand);
                     }
                     if rec.header != HEADER_LOCONET_DISPATCH_ADDR {
@@ -318,6 +343,7 @@ pub fn dispatch_addr(
                         continue;
                     }
                     if result == 0 {
+                        let _ = sock.send_to(&logoff_request(), target);
                         return Err(DispatchError::Rejected);
                     }
                     let _ = sock.send_to(&logoff_request(), target);
@@ -382,10 +408,7 @@ mod tests {
     #[test]
     fn encode_dispatch_matches_spec() {
         let pkt = dispatch_addr_request(42);
-        assert_eq!(
-            pkt,
-            vec![0x06, 0x00, 0xA3, 0x00, 42, 0x00]
-        );
+        assert_eq!(pkt, vec![0x06, 0x00, 0xA3, 0x00, 42, 0x00]);
     }
 
     #[test]
@@ -431,5 +454,19 @@ mod tests {
         assert_eq!(with.to_string(), "192.168.0.111:21105");
         let bare = Z21Host::parse_key("10.0.0.5").unwrap();
         assert_eq!(bare.to_string(), "10.0.0.5:21105");
+    }
+
+    #[test]
+    fn normalize_key_appends_default_port() {
+        assert_eq!(Z21Host::normalize_key("10.0.0.5"), "10.0.0.5:21105");
+        assert_eq!(
+            Z21Host::normalize_key("192.168.0.111:21106"),
+            "192.168.0.111:21106"
+        );
+        assert_eq!(
+            Z21Host::normalize_key("z21.local:21105"),
+            "z21.local:21105"
+        );
+        assert_eq!(Z21Host::normalize_key("z21.local"), "z21.local:21105");
     }
 }

@@ -20,11 +20,11 @@ pub use mdns::{
     discover_mdns_hosts, discover_ota_hosts, parse_ota_hosts, OtaHost, OTA_HTTP_SERVICE,
     Z21_UDP_SERVICE,
 };
-pub use z21::{
-    discover_z21, dispatch_addr, DispatchError, DispatchOutcome, Z21Host, Z21_UDP_PORT,
-};
 pub use radio::{
     first_wireless_interface, is_wireless_interface, parse_bss_infos, parse_scan_attrs,
     resolve_wireless_interface, Nl80211Radio, Radio, RadioFut, ScanResult,
 };
 pub use rfkill::{aggregate_state, RfkillState};
+pub use z21::{
+    discover_z21, dispatch_addr, DispatchError, DispatchOutcome, Z21Host, Z21_UDP_PORT,
+};
