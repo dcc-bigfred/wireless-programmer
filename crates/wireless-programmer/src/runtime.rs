@@ -16,7 +16,7 @@ use wp_core::{
     Transport, WifiCredentials,
 };
 use wp_link::{BoundedHttpClient, Radio, ScanResult};
-use wp_proto::ProgramRequestWire;
+use wp_proto::{ProgramRequestWire, ReachMode};
 
 use crate::config::Config;
 use crate::drivers::{Driver, DriverRegistry};
@@ -37,6 +37,8 @@ pub struct CachedCandidate {
     pub label: String,
     /// RSSI when known.
     pub rssi: Option<i32>,
+    /// How this candidate was discovered.
+    pub mode: ReachMode,
 }
 
 /// Shared handle used by IPC and the worker.
@@ -49,6 +51,8 @@ pub struct Runtime {
     tx: tokio::sync::mpsc::Sender<JobId>,
     /// Last scan results keyed by `(driver, key)`.
     cache: Mutex<HashMap<(String, String), CachedCandidate>>,
+    /// Soft-AP radio is associated for an in-flight AP job or probe.
+    radio_held: AtomicBool,
 }
 
 impl Runtime {
@@ -77,6 +81,7 @@ impl Runtime {
             jobs: jobs.clone(),
             tx,
             cache: Mutex::new(HashMap::new()),
+            radio_held: AtomicBool::new(false),
         });
 
         let worker = Arc::clone(&this);
@@ -107,6 +112,11 @@ impl Runtime {
         &self.cfg
     }
 
+    /// Whether the wireless radio is held for Soft-AP work.
+    pub fn radio_held(&self) -> bool {
+        self.radio_held.load(Ordering::SeqCst)
+    }
+
     /// Scan the radio and claim candidates via the driver registry.
     pub fn scan(&self) -> Result<Vec<CachedCandidate>, wp_core::DriverError> {
         let radio = Arc::clone(&self.radio);
@@ -117,7 +127,7 @@ impl Runtime {
 
         let mut out = Vec::new();
         let mut cache = self.cache.lock();
-        cache.clear();
+        cache.retain(|_, v| v.mode != ReachMode::Ap);
         for s in results {
             let obs = observation_from_scan(&s);
             if let Some(c) = self.registry.identify(&obs) {
@@ -129,6 +139,7 @@ impl Runtime {
                     key: c.key.clone(),
                     label: c.label,
                     rssi: c.rssi,
+                    mode: ReachMode::Ap,
                 };
                 cache.insert((c.driver, c.key), cached.clone());
                 out.push(cached);
@@ -152,6 +163,7 @@ impl Runtime {
                 key: key.clone(),
                 label: format!("{} ({})", h.hostname, h.ipv4),
                 rssi: None,
+                mode: ReachMode::Lan,
             };
             cache.insert((cached.driver.clone(), key), cached.clone());
             out.push(cached);
@@ -173,6 +185,7 @@ impl Runtime {
                 key: p.path.clone(),
                 label: p.label,
                 rssi: None,
+                mode: ReachMode::Usb,
             };
             cache.insert((cached.driver.clone(), cached.key.clone()), cached.clone());
             out.push(cached);
@@ -189,6 +202,7 @@ impl Runtime {
             key: port.to_string(),
             label: label.unwrap_or(port).to_string(),
             rssi: None,
+            mode: ReachMode::Usb,
         };
         self.cache
             .lock()
@@ -204,6 +218,7 @@ impl Runtime {
             key: host.to_string(),
             label: label.unwrap_or(host).to_string(),
             rssi: None,
+            mode: ReachMode::Lan,
         };
         self.cache
             .lock()
@@ -313,6 +328,7 @@ impl Runtime {
             bssid = ?candidate.bssid,
             "probe: connecting to Soft-AP"
         );
+        let _hold = RadioHold::new(self);
         self.rt.handle().block_on(async move {
             let mut r = radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
@@ -322,6 +338,7 @@ impl Runtime {
                     error = %e,
                     "probe: Soft-AP connect failed"
                 );
+                let _ = r.release().await;
                 return Err(e);
             }
             tracing::info!(ssid = %candidate.ssid, "probe: Soft-AP connect ok");
@@ -339,6 +356,36 @@ impl Runtime {
                 Err(e) => tracing::warn!(ssid = %candidate.ssid, error = %e, "probe: failed"),
             }
 
+            let _ = r.release().await;
+            result
+        })
+    }
+
+    /// Blink a WiFred LED over the Soft-AP (`GET /flashred.html`).
+    pub fn identify(
+        &self,
+        driver: Driver,
+        key: &str,
+        count: Option<u32>,
+    ) -> Result<(), wp_core::DriverError> {
+        let candidate = self.cached(driver.id_str(), key).ok_or_else(|| {
+            wp_core::DriverError::Other("candidate not in scan cache; run scan first".into())
+        })?;
+        let net = self.effective_net(driver);
+        let radio = Arc::clone(&self.radio);
+        let registry = Arc::clone(&self.registry);
+        let _hold = RadioHold::new(self);
+        self.rt.handle().block_on(async move {
+            let mut r = radio.lock().await;
+            let bssid = parse_bssid(candidate.bssid.as_deref());
+            r.connect_open(&candidate.ssid, bssid).await?;
+            r.set_address(net.source, net.prefix).await?;
+            r.link_up().await?;
+            let result = {
+                let mut client = make_http_client(&net);
+                let transport = Transport::Http(&mut client);
+                registry.blink(driver, transport, count).await
+            };
             let _ = r.release().await;
             result
         })
@@ -376,6 +423,51 @@ fn parse_bssid(s: Option<&str>) -> Option<[u8; 6]> {
 fn make_http_client(net: &CommissioningNet) -> BoundedHttpClient {
     let source = SocketAddr::from((net.source, 0));
     BoundedHttpClient::new(net.host.to_string(), net.port).with_source(source)
+}
+
+fn make_http_client_cancel(net: &CommissioningNet, cancel: Arc<AtomicBool>) -> BoundedHttpClient {
+    make_http_client(net).with_cancel(cancel)
+}
+
+struct RadioHold<'a> {
+    rt: &'a Runtime,
+}
+
+impl<'a> RadioHold<'a> {
+    fn new(rt: &'a Runtime) -> Self {
+        rt.radio_held.store(true, Ordering::SeqCst);
+        Self { rt }
+    }
+}
+
+impl Drop for RadioHold<'_> {
+    fn drop(&mut self) {
+        self.rt.radio_held.store(false, Ordering::SeqCst);
+    }
+}
+
+fn spawn_cancel_watch(rt: &Runtime, id: &JobId) -> Arc<AtomicBool> {
+    let flag = Arc::new(AtomicBool::new(rt.jobs.is_cancelled(id)));
+    let jobs = rt.jobs.clone();
+    let id = id.clone();
+    let f = Arc::clone(&flag);
+    rt.handle().spawn(async move {
+        loop {
+            if jobs.is_cancelled(&id) {
+                f.store(true, Ordering::Relaxed);
+                break;
+            }
+            if jobs
+                .snapshot(&id)
+                .map(|s| s.state.is_terminal())
+                .unwrap_or(true)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+    flag
 }
 
 /// Owned copy of a wire request so we can borrow into [`ProgramRequest`].
@@ -608,6 +700,7 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         return;
     }
 
+    let _hold = RadioHold::new(rt);
     let mut radio = rt.radio.lock().await;
     let bssid = parse_bssid(candidate.bssid.as_deref());
     tracing::info!(
@@ -699,12 +792,19 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         jobs: &rt.jobs,
         id: &id,
     };
-    let mut client = make_http_client(&net);
+    let cancel = spawn_cancel_watch(rt, &id);
+    let mut client = make_http_client_cancel(&net, cancel);
     let transport = Transport::Http(&mut client);
-    let outcome = rt
-        .registry
-        .program(driver, transport, &borrowed, &mut sink)
-        .await;
+    let outcome = match tokio::time::timeout(crate::jobs::JOB_DEADLINE, async {
+        rt.registry
+            .program(driver, transport, &borrowed, &mut sink)
+            .await
+    })
+    .await
+    {
+        Ok(inner) => inner,
+        Err(_) => Err(wp_core::DriverError::DeadlineElapsed("program")),
+    };
 
     {
         let mut radio = rt.radio.lock().await;
@@ -757,7 +857,6 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
 
 async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob) {
     use std::net::Ipv4Addr;
-    use wp_proto::ReachMode;
 
     let snap = match rt.jobs.snapshot(&id) {
         Some(s) => s,
@@ -797,6 +896,38 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         }
     };
 
+    if job.mode != ReachMode::Usb {
+        if image.len() as u64 > crate::jobs::MAX_FIRMWARE_BYTES {
+            rt.jobs.transition(
+                &id,
+                JobState::Failed,
+                None,
+                None,
+                Some("firmware image exceeds LongFred OTA slot (3.75 MiB)"),
+            );
+            return;
+        }
+        let header_n = image.len().min(16);
+        match wp_link::classify_image(&job.path, &image[..header_n], image.len() as u64) {
+            Ok(wp_link::ImageKind::AppBin { .. }) => {}
+            Ok(_) => {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    None,
+                    None,
+                    Some("HTTP firmware needs a .app.bin ESP app image, not ELF or a merged dump"),
+                );
+                return;
+            }
+            Err(e) => {
+                rt.jobs
+                    .transition(&id, JobState::Failed, None, None, Some(&e));
+                return;
+            }
+        }
+    }
+
     rt.jobs
         .transition(&id, JobState::Writing, Some("write"), Some(0), None);
 
@@ -825,6 +956,20 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             }
             sink.step("write");
             sink.detail(&format!("espflash {port}"));
+            if let Ok(mut f) = std::fs::File::open(&job.path) {
+                let mut header = [0u8; 16];
+                if let Ok(n) = std::io::Read::read(&mut f, &mut header) {
+                    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+                    if matches!(
+                        wp_link::classify_image(&job.path, &header[..n], len),
+                        Ok(wp_link::ImageKind::AppBin { .. })
+                    ) {
+                        sink.detail(
+                            "USB .app.bin writes ota_0 only; first dual-slot install needs ELF + --partition-table",
+                        );
+                    }
+                }
+            }
             let table = job.partition_table.clone();
             let image_path = job.path.clone();
             let label = format!("espflash {port}");
@@ -892,6 +1037,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             let net = rt.effective_net(driver);
             rt.jobs
                 .transition(&id, JobState::Joining, Some("join"), None, None);
+            let _hold = RadioHold::new(rt);
             let mut radio = rt.radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
             if let Err(e) = radio.connect_open(&candidate.ssid, bssid).await {

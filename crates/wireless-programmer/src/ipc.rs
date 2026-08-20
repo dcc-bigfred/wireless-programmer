@@ -150,6 +150,7 @@ impl ServerInner {
             return Ok(());
         }
         let mut since = 0usize;
+        let mut sent_snapshot = false;
         loop {
             let Some(frames) = self.runtime.jobs().frames_since(&job_id, since) else {
                 write(
@@ -175,8 +176,10 @@ impl ServerInner {
             if terminal {
                 return Ok(());
             }
-            // If no frames yet, still emit a snapshot once so the client sees Queued.
-            if since == 0 {
+            // Emit a snapshot once so the client sees Queued before any
+            // transition frames exist. Do not bump `since` — that would skip
+            // the first real frame (often the only Failed/Cancelled frame).
+            if since == 0 && !sent_snapshot {
                 if let Some(s) = self.runtime.jobs().snapshot(&job_id) {
                     let wire = snapshot_to_frame(s);
                     let terminal = wire.state.is_terminal();
@@ -188,7 +191,7 @@ impl ServerInner {
                             error: None,
                         },
                     )?;
-                    since = self.runtime.jobs().frame_count(&job_id).max(1);
+                    sent_snapshot = true;
                     if terminal {
                         return Ok(());
                     }
@@ -214,6 +217,13 @@ impl ServerInner {
                     Some(Params::Scan(ref p)) => p.mode,
                     _ => wp_proto::ReachMode::Ap,
                 };
+                if mode == wp_proto::ReachMode::Ap && self.runtime.radio_held() {
+                    return err_response(
+                        RequestKind::Scan,
+                        "busy",
+                        "radio in use by a programming job",
+                    );
+                }
                 tracing::info!(?mode, "scan started");
                 let scanned = match mode {
                     wp_proto::ReachMode::Lan => self.runtime.scan_lan(),
@@ -264,25 +274,37 @@ impl ServerInner {
                 }
             }
             RequestKind::Probe => match req.params {
-                Some(Params::Probe(p)) => match self.runtime.registry().driver_for(&p.candidate) {
-                    Some(d) => match self.runtime.probe(d, &p.candidate.key) {
-                        Ok(info) => Response {
-                            kind: RequestKind::Probe,
-                            result: Some(ResultBody::Probe(device_info_from_probe(
-                                d.id_str(),
-                                &p.candidate.key,
-                                &info,
-                            ))),
-                            error: None,
-                        },
-                        Err(e) => err_response(RequestKind::Probe, "probe_failed", &e.to_string()),
-                    },
-                    None => err_response(
-                        RequestKind::Probe,
-                        "unknown_driver",
-                        "no driver owns this candidate",
-                    ),
-                },
+                Some(Params::Probe(p)) => {
+                    if self.runtime.radio_held() {
+                        err_response(
+                            RequestKind::Probe,
+                            "busy",
+                            "radio in use by a programming job",
+                        )
+                    } else {
+                        match self.runtime.registry().driver_for(&p.candidate) {
+                            Some(d) => match self.runtime.probe(d, &p.candidate.key) {
+                                Ok(info) => Response {
+                                    kind: RequestKind::Probe,
+                                    result: Some(ResultBody::Probe(device_info_from_probe(
+                                        d.id_str(),
+                                        &p.candidate.key,
+                                        &info,
+                                    ))),
+                                    error: None,
+                                },
+                                Err(e) => {
+                                    err_response(RequestKind::Probe, "probe_failed", &e.to_string())
+                                }
+                            },
+                            None => err_response(
+                                RequestKind::Probe,
+                                "unknown_driver",
+                                "no driver owns this candidate",
+                            ),
+                        }
+                    }
+                }
                 _ => err_response(RequestKind::Probe, "bad_params", "missing params"),
             },
             RequestKind::Program => match req.params {
@@ -387,13 +409,37 @@ impl ServerInner {
                 }
                 _ => err_response(RequestKind::JobCancel, "bad_params", "missing params"),
             },
-            RequestKind::Identify => Response {
-                kind: RequestKind::Identify,
-                result: None,
-                error: Some(ErrorBody::new(
-                    "not_implemented",
-                    "driver has no identify support",
-                )),
+            RequestKind::Identify => match req.params {
+                Some(Params::Identify(p)) => {
+                    if self.runtime.radio_held() {
+                        err_response(
+                            RequestKind::Identify,
+                            "busy",
+                            "radio in use by a programming job",
+                        )
+                    } else {
+                        match self.runtime.registry().driver_for(&p.candidate) {
+                            Some(d) => match self.runtime.identify(d, &p.candidate.key, p.count) {
+                                Ok(()) => Response {
+                                    kind: RequestKind::Identify,
+                                    result: Some(ResultBody::Identify),
+                                    error: None,
+                                },
+                                Err(e) => err_response(
+                                    RequestKind::Identify,
+                                    "driverError",
+                                    &e.to_string(),
+                                ),
+                            },
+                            None => err_response(
+                                RequestKind::Identify,
+                                "unknown_driver",
+                                "no driver owns this candidate",
+                            ),
+                        }
+                    }
+                }
+                _ => err_response(RequestKind::Identify, "bad_params", "missing params"),
             },
             RequestKind::LinkStatus => {
                 let cfg = self.runtime.config();

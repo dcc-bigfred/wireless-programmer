@@ -5,8 +5,7 @@
 // ---------------------------------------------------------------------------
 
 /// Successful response bodies.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResultBody {
     /// `hello` response.
     Hello(HelloResult),
@@ -93,7 +92,7 @@ pub struct CommissioningNetWire {
 
 /// Identity format constraints.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum IdentityFormatWire {
     /// Exactly `len` decimal digits.
     Digits {

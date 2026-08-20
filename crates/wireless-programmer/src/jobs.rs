@@ -17,6 +17,12 @@ pub const JOB_DEADLINE: Duration = Duration::from_secs(120);
 /// Firmware POST deadline (matches LongFred HTTP timeout).
 pub const FIRMWARE_DEADLINE: Duration = Duration::from_secs(120);
 
+/// LongFred OTA slot (`ota_0` / `ota_1`) — cap for images loaded into RAM.
+pub const MAX_FIRMWARE_BYTES: u64 = 0x3C_0000;
+
+/// Keep at most this many terminal jobs in the registry.
+const MAX_JOB_HISTORY: usize = 32;
+
 /// How often firmware jobs emit a `job.watch` frame while blocked in
 /// `espflash` or an HTTP POST. Must stay well under the client idle default
 /// (10 s) so Go and CLI watchers do not drop the stream.
@@ -250,32 +256,33 @@ impl JobRegistry {
             });
             if state.is_terminal() {
                 inner.active = None;
+                evict_old_jobs(&mut inner);
             }
         }
     }
 
-    /// Mark a job cancelled. Transitions to [`JobState::Cancelled`] when the
-    /// job is still non-terminal (frees the radio). The worker also observes
-    /// the cancel flag via [`Self::is_cancelled`].
+    /// Mark a job cancelled. Does **not** free the radio slot or become
+    /// terminal until the worker observes the flag, aborts work, and calls
+    /// [`Self::transition`] to [`JobState::Cancelled`]. A second `program`
+    /// while the worker is still tearing down returns [`JobError::Busy`].
     pub fn cancel(&self, id: &JobId) {
         let mut inner = self.inner.lock();
         let Some(rec) = inner.jobs.get_mut(&id.0) else {
             return;
         };
-        rec.cancel = true;
-        if !rec.snapshot.state.is_terminal() {
-            rec.snapshot.state = JobState::Cancelled;
-            rec.frames.push(JobFrame {
-                id: id.clone(),
-                state: JobState::Cancelled,
-                step: None,
-                progress: None,
-                detail: Some("cancelled by caller".into()),
-            });
-            if inner.active.as_deref() == Some(id.0.as_str()) {
-                inner.active = None;
-            }
+        if rec.snapshot.state.is_terminal() {
+            rec.cancel = true;
+            return;
         }
+        rec.cancel = true;
+        rec.snapshot.detail = Some("cancel requested".into());
+        rec.frames.push(JobFrame {
+            id: id.clone(),
+            state: rec.snapshot.state,
+            step: None,
+            progress: None,
+            detail: Some("cancel requested".into()),
+        });
     }
 
     /// Whether cancellation was requested for a job.
@@ -323,6 +330,25 @@ impl Default for JobRegistry {
     }
 }
 
+fn evict_old_jobs(inner: &mut JobRegistryInner) {
+    let over = inner.jobs.len().saturating_sub(MAX_JOB_HISTORY);
+    if over == 0 {
+        return;
+    }
+    let mut terminal: Vec<(String, Instant)> = inner
+        .jobs
+        .iter()
+        .filter(|(id, rec)| {
+            rec.snapshot.state.is_terminal() && inner.active.as_deref() != Some(id.as_str())
+        })
+        .map(|(id, rec)| (id.clone(), rec.snapshot.created_at))
+        .collect();
+    terminal.sort_by_key(|(_, t)| *t);
+    for (id, _) in terminal.into_iter().take(over) {
+        inner.jobs.remove(&id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -332,5 +358,32 @@ mod tests {
         assert!(WATCH_HEARTBEAT < Duration::from_secs(10));
         assert!(WATCH_HEARTBEAT < FIRMWARE_DEADLINE);
         assert!(FIRMWARE_DEADLINE <= wp_link::USB_FLASH_DEADLINE);
+    }
+
+    #[test]
+    fn cancel_keeps_slot_until_worker_transitions() {
+        let jobs = JobRegistry::new();
+        let id = jobs.submit("longfred", "key", None).expect("submit");
+        assert!(jobs.is_busy());
+        jobs.cancel(&id);
+        assert!(jobs.is_cancelled(&id));
+        assert!(
+            jobs.is_busy(),
+            "slot must stay held while worker tears down"
+        );
+        let snap = jobs.snapshot(&id).expect("snap");
+        assert!(!snap.state.is_terminal());
+        jobs.transition(&id, JobState::Cancelled, None, None, Some("cancelled"));
+        assert!(!jobs.is_busy());
+        assert_eq!(jobs.snapshot(&id).unwrap().state, JobState::Cancelled);
+    }
+
+    #[test]
+    fn second_submit_is_busy_after_cancel_before_terminal() {
+        let jobs = JobRegistry::new();
+        let id = jobs.submit("wifred", "a", None).expect("first");
+        jobs.cancel(&id);
+        let err = jobs.submit("wifred", "b", None).expect_err("busy");
+        assert!(matches!(err, JobError::Busy(_)));
     }
 }

@@ -174,6 +174,34 @@ impl DriverRegistry {
         }
     }
 
+    /// Blink a device LED (WiFred Soft-AP only).
+    pub async fn blink(
+        &self,
+        driver: Driver,
+        transport: Transport<'_>,
+        count: Option<u32>,
+    ) -> Result<(), DriverError> {
+        match driver {
+            Driver::WiFred => {
+                let client = match transport {
+                    Transport::Http(c) => c,
+                    Transport::Bytes(_) => {
+                        return Err(DriverError::Other(
+                            "wifred identify requires an HTTP transport".into(),
+                        ));
+                    }
+                };
+                client
+                    .request("GET", &wp_drivers::wifred::identify_request(count), None)
+                    .map_err(|e| DriverError::Http(e.to_string()))?;
+                Ok(())
+            }
+            Driver::LongFred => Err(DriverError::Other(
+                "LongFred has no LED identify in programming mode".into(),
+            )),
+        }
+    }
+
     /// Borrow the WiFred driver.
     pub fn wifred(&self) -> &WiFredDriver {
         &self.wifred

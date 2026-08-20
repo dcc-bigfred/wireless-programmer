@@ -180,3 +180,12 @@ fn fake_probe_wifred() {
         Some("1")
     );
 }
+
+#[test]
+fn fake_identify_wifred() {
+    let rt = setup_runtime();
+    let found = rt.scan().expect("scan");
+    let c = found.iter().find(|c| c.driver == "wifred").expect("wifred");
+    rt.identify(Driver::WiFred, &c.key, Some(3))
+        .expect("identify");
+}

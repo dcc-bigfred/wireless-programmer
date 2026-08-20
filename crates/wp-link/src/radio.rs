@@ -209,6 +209,23 @@ pub struct Nl80211Radio {
     if_index: u32,
 }
 
+/// Passive scan dwell after the trigger ACK (2.4 GHz, ~13 channels).
+const SCAN_SETTLE: std::time::Duration = std::time::Duration::from_millis(2500);
+/// Hard cap on a scan trigger + dump.
+const SCAN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(8);
+/// Association / connect command cap.
+const ASSOCIATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(15);
+/// Pause after CONNECT so the kernel finishes association before HTTP.
+const ASSOCIATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(800);
+
+async fn drain_netlink<S>(mut stream: S)
+where
+    S: futures::stream::TryStream + Unpin,
+{
+    use futures::stream::TryStreamExt;
+    while let Ok(Some(_)) = stream.try_next().await {}
+}
+
 impl Nl80211Radio {
     /// Bind to the first wireless interface.
     ///
@@ -253,30 +270,30 @@ impl Radio for Nl80211Radio {
             use futures::stream::TryStreamExt;
             use wl_nl80211::Nl80211Scan;
 
-            let (connection, handle, _) = wl_nl80211::new_connection()
-                .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
-            tokio::spawn(connection);
+            tokio::time::timeout(SCAN_DEADLINE, async {
+                let (connection, handle, _) = wl_nl80211::new_connection()
+                    .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
+                tokio::spawn(connection);
 
-            // Trigger a passive scan, then dump the cached results.
-            let attrs = Nl80211Scan::new(if_index).passive(true).build();
-            let mut trigger = handle.scan().trigger(attrs).execute().await;
-            while trigger.try_next().await.is_ok() {
-                // drain acks
-            }
-            // Give the kernel a moment to populate the cache.
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                let attrs = Nl80211Scan::new(if_index).passive(true).build();
+                let trigger = handle.scan().trigger(attrs).execute().await;
+                drain_netlink(trigger).await;
+                tokio::time::sleep(SCAN_SETTLE).await;
 
-            let mut dump = handle.scan().dump(if_index).execute().await;
-            let mut results = Vec::new();
-            while let Ok(Some(msg)) = dump.try_next().await {
-                if results.len() >= max {
-                    break;
+                let mut dump = handle.scan().dump(if_index).execute().await;
+                let mut results = Vec::new();
+                while let Ok(Some(msg)) = dump.try_next().await {
+                    if results.len() >= max {
+                        break;
+                    }
+                    if let Some(r) = parse_scan_attrs(&msg.payload.attributes) {
+                        results.push(r);
+                    }
                 }
-                if let Some(r) = parse_scan_attrs(&msg.payload.attributes) {
-                    results.push(r);
-                }
-            }
-            Ok(results)
+                Ok(results)
+            })
+            .await
+            .map_err(|_| DriverError::DeadlineElapsed("scan"))?
         })
     }
 
@@ -284,7 +301,6 @@ impl Radio for Nl80211Radio {
         let if_index = self.if_index;
         let ssid = ssid.to_string();
         Box::pin(async move {
-            use futures::stream::TryStreamExt;
             use wl_nl80211::{Nl80211AuthType, Nl80211Connect};
 
             let (connection, handle, _) = wl_nl80211::new_connection()
@@ -300,11 +316,14 @@ impl Radio for Nl80211Radio {
             }
             let attrs = builder.build();
 
-            let mut stream = handle.connection().connect(attrs).execute().await;
-            while stream.try_next().await.is_ok() {
-                // drain acks
-            }
-            Ok(())
+            tokio::time::timeout(ASSOCIATE_DEADLINE, async {
+                let stream = handle.connection().connect(attrs).execute().await;
+                drain_netlink(stream).await;
+                tokio::time::sleep(ASSOCIATE_SETTLE).await;
+                Ok::<(), DriverError>(())
+            })
+            .await
+            .map_err(|_| DriverError::AssociationTimedOut)?
         })
     }
 
@@ -322,7 +341,17 @@ impl Radio for Nl80211Radio {
                 .add(if_index, std::net::IpAddr::V4(addr), prefix_len)
                 .execute()
                 .await
-                .map_err(|e| DriverError::Other(format!("address add: {e}")))
+                .or_else(|e| {
+                    let msg = e.to_string();
+                    if msg.contains("exists")
+                        || msg.contains("EEXIST")
+                        || msg.contains("File exists")
+                    {
+                        Ok(())
+                    } else {
+                        Err(DriverError::Other(format!("address add: {e}")))
+                    }
+                })
         })
     }
 

@@ -163,8 +163,9 @@ wireless-programmer update-firmware --mode usb --port /dev/ttyACM0 \
 Like `program`, the command watches the job by default; `--no-watch`
 returns the job id immediately. While `espflash` or the HTTP POST is
 running, the daemon writes a detail frame every 3 seconds (for example
-`espflash /dev/ttyUSB0 (12s)`). `job cancel` kills the `espflash` child
-and aborts an in-flight firmware POST.
+`espflash /dev/ttyUSB0 (12s)`). `job cancel` requests cancellation: it
+kills the `espflash` child and aborts an in-flight firmware POST, but
+the radio slot stays busy until the worker reaches a terminal state.
 
 ## Programming workflow
 

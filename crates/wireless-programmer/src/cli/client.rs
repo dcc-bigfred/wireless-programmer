@@ -246,6 +246,14 @@ fn hello(socket: &Path, args: CommonArgs) -> HandlerResult {
     println!("drivers:");
     for d in &h.drivers {
         println!("  {} — {}", d.id, d.name);
+        println!(
+            "    firmware update: {}",
+            if d.capabilities.supports_firmware_update {
+                "yes"
+            } else {
+                "no"
+            }
+        );
     }
     Ok(())
 }

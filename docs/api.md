@@ -149,8 +149,10 @@ the job reaches a terminal state (`done`, `failed`, `cancelled`). Callers
 should set a per-frame idle read deadline (the Go client does this
 automatically). Firmware jobs emit a detail frame every 3 seconds while
 blocked in `espflash` or `POST /api/v1/firmware`, so a 10s per-frame idle
-deadline is enough. `job.cancel` kills an in-flight `espflash` child and
-aborts the firmware HTTP POST.
+deadline is enough. `job.cancel` sets a cancel flag, kills an in-flight
+`espflash` child, and aborts the firmware HTTP POST. The job stays
+non-terminal and the radio slot stays occupied until the worker finishes
+tearing down; a second `program` in that window returns `busy`.
 
 ### `identify`
 

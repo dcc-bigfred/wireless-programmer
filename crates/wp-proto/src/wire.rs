@@ -5,30 +5,27 @@
 // ---------------------------------------------------------------------------
 
 /// Top-level request envelope. `type` selects the method; `params` carries
-/// the arguments.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// the arguments as a **flat** object (not an internally tagged enum), matching
+/// `docs/api.md` and the Go client.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     /// Method selector.
-    #[serde(rename = "type")]
     pub kind: RequestKind,
     /// Method parameters.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub params: Option<Params>,
 }
 
 /// Top-level response envelope.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+///
+/// `result` is the inner body (array, object, or omitted), not a tagged
+/// `{ "scan": ... }` wrapper — Go unmarshals it into a concrete struct.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     /// Method selector mirrored from the request.
-    #[serde(rename = "type")]
     pub kind: RequestKind,
     /// Result on success.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<crate::ResultBody>,
     /// Error on failure.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorBody>,
 }
 
@@ -65,22 +62,25 @@ pub enum RequestKind {
     /// `program`: start a programming job, returns `job_id`.
     Program,
     /// `job.get`: snapshot a job's state.
+    #[serde(rename = "job.get")]
     JobGet,
     /// `job.watch`: stream job progress frames until terminal.
+    #[serde(rename = "job.watch")]
     JobWatch,
     /// `job.cancel`: request cancellation of a running job.
+    #[serde(rename = "job.cancel")]
     JobCancel,
     /// `identify`: blink the device LED so an operator can find it.
     Identify,
     /// `link.status`: report radio/link state.
+    #[serde(rename = "link.status")]
     LinkStatus,
     /// `updateFirmware`: upload an app image over HTTP (Soft-AP or LAN).
     UpdateFirmware,
 }
 
 /// Method parameters.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Params {
     /// Arguments for [`RequestKind::Program`].
     Program(ProgramParams),
@@ -280,4 +280,258 @@ pub struct FunctionMappingWire {
     pub index: u8,
     /// Driver-specific mapping value.
     pub value: u8,
+}
+
+// ---------------------------------------------------------------------------
+// Flat JSON envelopes (docs/api.md + Go client)
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EnvelopeDto {
+    #[serde(rename = "type")]
+    kind: RequestKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    params: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<ErrorBody>,
+}
+
+fn params_to_value(params: &Params) -> Result<Option<serde_json::Value>, serde_json::Error> {
+    match params {
+        Params::None => Ok(None),
+        Params::Program(p) => serde_json::to_value(p).map(Some),
+        Params::Probe(p) => serde_json::to_value(p).map(Some),
+        Params::Job(p) => serde_json::to_value(p).map(Some),
+        Params::Identify(p) => serde_json::to_value(p).map(Some),
+        Params::Scan(p) => serde_json::to_value(p).map(Some),
+        Params::UpdateFirmware(p) => serde_json::to_value(p).map(Some),
+    }
+}
+
+fn params_from_value(
+    kind: RequestKind,
+    value: Option<serde_json::Value>,
+) -> Result<Option<Params>, serde_json::Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    match kind {
+        RequestKind::Hello | RequestKind::LinkStatus => Ok(Some(Params::None)),
+        RequestKind::Scan => Ok(Some(Params::Scan(serde_json::from_value(value)?))),
+        RequestKind::Probe => Ok(Some(Params::Probe(serde_json::from_value(value)?))),
+        RequestKind::Program => Ok(Some(Params::Program(serde_json::from_value(value)?))),
+        RequestKind::JobGet | RequestKind::JobWatch | RequestKind::JobCancel => {
+            Ok(Some(Params::Job(serde_json::from_value(value)?)))
+        }
+        RequestKind::Identify => Ok(Some(Params::Identify(serde_json::from_value(value)?))),
+        RequestKind::UpdateFirmware => {
+            Ok(Some(Params::UpdateFirmware(serde_json::from_value(value)?)))
+        }
+    }
+}
+
+fn result_to_value(
+    result: &crate::ResultBody,
+) -> Result<Option<serde_json::Value>, serde_json::Error> {
+    use crate::ResultBody;
+    match result {
+        ResultBody::Hello(v) => serde_json::to_value(v).map(Some),
+        ResultBody::Scan(v) => serde_json::to_value(v).map(Some),
+        ResultBody::Probe(v) => serde_json::to_value(v).map(Some),
+        ResultBody::Program(v) | ResultBody::UpdateFirmware(v) => serde_json::to_value(v).map(Some),
+        ResultBody::Job(v) | ResultBody::JobCancelled(v) => serde_json::to_value(v).map(Some),
+        ResultBody::JobWatch(v) => serde_json::to_value(v).map(Some),
+        ResultBody::Identify => Ok(None),
+        ResultBody::LinkStatus(v) => serde_json::to_value(v).map(Some),
+    }
+}
+
+fn result_from_value(
+    kind: RequestKind,
+    value: Option<serde_json::Value>,
+) -> Result<Option<crate::ResultBody>, serde_json::Error> {
+    use crate::ResultBody;
+    let Some(value) = value else {
+        return Ok(match kind {
+            RequestKind::Identify => Some(ResultBody::Identify),
+            _ => None,
+        });
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(match kind {
+        RequestKind::Hello => ResultBody::Hello(serde_json::from_value(value)?),
+        RequestKind::Scan => ResultBody::Scan(serde_json::from_value(value)?),
+        RequestKind::Probe => ResultBody::Probe(serde_json::from_value(value)?),
+        RequestKind::Program => ResultBody::Program(serde_json::from_value(value)?),
+        RequestKind::UpdateFirmware => ResultBody::UpdateFirmware(serde_json::from_value(value)?),
+        RequestKind::JobGet => ResultBody::Job(serde_json::from_value(value)?),
+        RequestKind::JobWatch => ResultBody::JobWatch(serde_json::from_value(value)?),
+        RequestKind::JobCancel => ResultBody::JobCancelled(serde_json::from_value(value)?),
+        RequestKind::Identify => ResultBody::Identify,
+        RequestKind::LinkStatus => ResultBody::LinkStatus(serde_json::from_value(value)?),
+    }))
+}
+
+impl serde::Serialize for Request {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let params = match &self.params {
+            None => None,
+            Some(p) => params_to_value(p).map_err(serde::ser::Error::custom)?,
+        };
+        EnvelopeDto {
+            kind: self.kind,
+            params,
+            result: None,
+            error: None,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Request {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let dto = EnvelopeDto::deserialize(deserializer)?;
+        Ok(Self {
+            kind: dto.kind,
+            params: params_from_value(dto.kind, dto.params).map_err(serde::de::Error::custom)?,
+        })
+    }
+}
+
+impl serde::Serialize for Response {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let result = match &self.result {
+            None => None,
+            Some(r) => result_to_value(r).map_err(serde::ser::Error::custom)?,
+        };
+        EnvelopeDto {
+            kind: self.kind,
+            params: None,
+            result,
+            error: self.error.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Response {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let dto = EnvelopeDto::deserialize(deserializer)?;
+        Ok(Self {
+            kind: dto.kind,
+            result: result_from_value(dto.kind, dto.result).map_err(serde::de::Error::custom)?,
+            error: dto.error,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{HelloResult, ProgramResult, ResultBody};
+
+    #[test]
+    fn update_firmware_params_are_flat() {
+        let req = Request {
+            kind: RequestKind::UpdateFirmware,
+            params: Some(Params::UpdateFirmware(UpdateFirmwareParams {
+                mode: ReachMode::Ap,
+                candidate: Some(CandidateRef {
+                    driver: "longfred".into(),
+                    key: "aa:bb".into(),
+                }),
+                path: "/tmp/x.app.bin".into(),
+                host: None,
+                port: None,
+                partition_table: None,
+            })),
+        };
+        let json = serde_json::to_value(&req).expect("ser");
+        assert_eq!(json["type"], "updateFirmware");
+        assert_eq!(json["params"]["mode"], "ap");
+        assert_eq!(json["params"]["path"], "/tmp/x.app.bin");
+        assert_eq!(json["params"]["candidate"]["driver"], "longfred");
+        assert!(json["params"].get("updateFirmware").is_none());
+
+        let back: Request = serde_json::from_value(json).expect("de");
+        assert_eq!(back.kind, RequestKind::UpdateFirmware);
+        match back.params {
+            Some(Params::UpdateFirmware(p)) => assert_eq!(p.path, "/tmp/x.app.bin"),
+            other => panic!("expected UpdateFirmware, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn go_dotted_method_names_round_trip() {
+        let req: Request =
+            serde_json::from_str(r#"{"type":"job.get","params":{"jobId":"job-1"}}"#).expect("de");
+        assert_eq!(req.kind, RequestKind::JobGet);
+        assert_eq!(serde_json::to_value(&req).unwrap()["type"], "job.get");
+
+        let watch: Request =
+            serde_json::from_str(r#"{"type":"job.watch","params":{"jobId":"job-1"}}"#).unwrap();
+        assert_eq!(watch.kind, RequestKind::JobWatch);
+
+        let link: Request = serde_json::from_str(r#"{"type":"link.status"}"#).unwrap();
+        assert_eq!(link.kind, RequestKind::LinkStatus);
+    }
+
+    #[test]
+    fn scan_result_is_a_bare_array() {
+        let resp = Response {
+            kind: RequestKind::Scan,
+            result: Some(ResultBody::Scan(Vec::new())),
+            error: None,
+        };
+        let json = serde_json::to_value(&resp).expect("ser");
+        assert_eq!(json["type"], "scan");
+        assert!(json["result"].is_array());
+        assert!(json["result"].get("scan").is_none());
+    }
+
+    #[test]
+    fn hello_result_is_a_bare_object() {
+        let resp = Response {
+            kind: RequestKind::Hello,
+            result: Some(ResultBody::Hello(HelloResult {
+                version: "0.1.0".into(),
+                commit: None,
+                drivers: Vec::new(),
+            })),
+            error: None,
+        };
+        let json = serde_json::to_value(&resp).expect("ser");
+        assert_eq!(json["result"]["version"], "0.1.0");
+        assert!(json["result"].get("hello").is_none());
+    }
+
+    #[test]
+    fn program_result_job_id_is_at_result_root() {
+        let resp = Response {
+            kind: RequestKind::Program,
+            result: Some(ResultBody::Program(ProgramResult {
+                job_id: "job-1".into(),
+            })),
+            error: None,
+        };
+        let json = serde_json::to_value(&resp).expect("ser");
+        assert_eq!(json["result"]["jobId"], "job-1");
+    }
+
+    #[test]
+    fn go_flat_scan_lan_params() {
+        let req: Request =
+            serde_json::from_str(r#"{"type":"scan","params":{"mode":"lan"}}"#).unwrap();
+        match req.params {
+            Some(Params::Scan(p)) => assert_eq!(p.mode, ReachMode::Lan),
+            other => panic!("{other:?}"),
+        }
+    }
 }
