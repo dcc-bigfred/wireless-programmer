@@ -57,3 +57,12 @@ clippy:
 clean:
 	$(CARGO) clean
 	rm -rf dist
+
+# Hub runs Dropbear. Older images lack /usr/libexec/sftp-server; -O uses legacy scp.
+# Harmless on images that ship openssh sftp-server (bigfred-os defconfig).
+SCP ?= scp
+SCP_OPTS ?= -O
+
+hub-upload:
+	$(SCP) $(SCP_OPTS) dist/wireless-programmer-linux-arm64 root@192.168.0.1:/tmp/wireless-programmer
+	ssh root@192.168.0.1 'mkdir -p /data/opt/wireless-programmer && cp /tmp/wireless-programmer /data/opt/wireless-programmer/wireless-programmer && chmod 755 /data/opt/wireless-programmer/wireless-programmer && microinit stop wireless-programmer; microinit start wireless-programmer'

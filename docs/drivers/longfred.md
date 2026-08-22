@@ -23,6 +23,16 @@ The daemon should associate to the open AP, assign `192.168.0.2/24` on the
 wireless interface (**no default route**), hand a sync `HttpClient` to the
 driver, and release the radio on every exit path.
 
+> **Address collision with hub LAN.** The BigFred hub serves its own LAN from
+> `192.168.0.1/24`, so `192.168.0.1` is a local address on the hub's Ethernet.
+> The daemon parks `lookup local` at pref 1 and installs
+> `from 192.168.0.2 to 192.168.0.1 lookup 100` at pref 0, with
+> `192.168.0.1/32 dev wlan0` in table 100. The HTTP client binds
+> `192.168.0.2` but **does not** set `SO_BINDTODEVICE` for this destination
+> (that made the kernel RST the SYN-ACK). Inbound still needs
+> `accept_local=1` and `rp_filter=0` on `wlan0`. Restored on radio release;
+> see `wp_link::netcfg`.
+
 Candidate identity: SSID prefix `longfred_prog`, stable key = BSSID.
 
 ## Capabilities

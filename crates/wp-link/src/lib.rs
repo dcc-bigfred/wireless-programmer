@@ -6,6 +6,7 @@
 pub mod espflash;
 pub mod http;
 pub mod mdns;
+pub mod netcfg;
 pub mod radio;
 pub mod rfkill;
 pub mod z21;
@@ -19,6 +20,10 @@ pub use http::{percent_encode, BoundedHttpClient, MAX_BODY_BYTES};
 pub use mdns::{
     discover_mdns_hosts, discover_ota_hosts, parse_ota_hosts, OtaHost, OTA_HTTP_SERVICE,
     Z21_UDP_SERVICE,
+};
+pub use netcfg::{
+    install_policy_route, is_local_address, prepare_softap, remove_policy_route, PolicyRoute,
+    SavedConf,
 };
 pub use radio::{
     first_wireless_interface, is_wireless_interface, parse_bss_infos, parse_scan_attrs,

@@ -56,6 +56,9 @@ pub struct Runtime {
     cache: Mutex<HashMap<(String, String), CachedCandidate>>,
     /// Soft-AP radio is associated for an in-flight AP job or probe.
     radio_held: AtomicBool,
+    /// Kernel device the radio drives, snapshotted at construction. Soft-AP
+    /// HTTP sockets bind to it (`SO_BINDTODEVICE`). `None` for mock radios.
+    radio_device: Option<String>,
 }
 
 impl Runtime {
@@ -73,6 +76,11 @@ impl Runtime {
             .map_err(|e| wp_core::DriverError::Other(format!("tokio runtime: {e}")))?;
 
         let (tx, rx) = tokio::sync::mpsc::channel::<JobId>(8);
+        let radio_device = radio.device().map(str::to_owned);
+        match radio_device.as_deref() {
+            Some(dev) => tracing::info!(device = dev, "Soft-AP HTTP sockets bind to device"),
+            None => tracing::debug!("radio has no kernel device; HTTP sockets unbound"),
+        }
         let radio = Arc::new(tokio::sync::Mutex::new(radio));
         let registry = Arc::new(registry);
 
@@ -85,6 +93,7 @@ impl Runtime {
             tx,
             cache: Mutex::new(HashMap::new()),
             radio_held: AtomicBool::new(false),
+            radio_device,
         });
 
         let worker = Arc::clone(&this);
@@ -120,6 +129,14 @@ impl Runtime {
         self.radio_held.load(Ordering::SeqCst)
     }
 
+    /// Network device for SO_BINDTODEVICE on Soft-AP HTTP sockets.
+    ///
+    /// Taken from the radio itself, not `cfg.interface`, which stays `None`
+    /// when the interface is auto-selected.
+    fn radio_device(&self) -> Option<&str> {
+        self.radio_device.as_deref()
+    }
+
     /// Scan the radio and claim candidates via the driver registry.
     pub fn scan(&self) -> Result<Vec<CachedCandidate>, wp_core::DriverError> {
         let radio = Arc::clone(&self.radio);
@@ -128,16 +145,26 @@ impl Runtime {
             r.scan(64).await
         })?;
 
+        tracing::info!(raw = results.len(), "radio scan dump");
+        for s in &results {
+            tracing::debug!(
+                ssid = ?s.ssid,
+                bssid = ?s.bssid,
+                rssi = ?s.rssi,
+                "scan bss"
+            );
+        }
+
         let mut out = Vec::new();
         let mut cache = self.cache.lock();
         cache.retain(|_, v| v.mode != ReachMode::Ap);
-        for s in results {
-            let obs = observation_from_scan(&s);
+        for s in &results {
+            let obs = observation_from_scan(s);
             if let Some(c) = self.registry.identify(&obs) {
                 let ssid = c.label.clone();
                 let cached = CachedCandidate {
                     ssid,
-                    bssid: s.bssid,
+                    bssid: s.bssid.clone(),
                     driver: c.driver.clone(),
                     key: c.key.clone(),
                     label: c.label,
@@ -148,6 +175,12 @@ impl Runtime {
                 cache.insert((c.driver, c.key), cached.clone());
                 out.push(cached);
             }
+        }
+        if out.is_empty() && !results.is_empty() {
+            tracing::info!(
+                raw = results.len(),
+                "scan finished: radio saw APs, none matched longfred_prog / wiFred-config"
+            );
         }
         Ok(out)
     }
@@ -377,6 +410,7 @@ impl Runtime {
         let net = self.effective_net(driver);
         let radio = Arc::clone(&self.radio);
         let registry = Arc::clone(&self.registry);
+        let device = self.radio_device().map(str::to_owned);
         tracing::info!(
             driver = driver.id_str(),
             key,
@@ -400,9 +434,10 @@ impl Runtime {
             tracing::info!(ssid = %candidate.ssid, "probe: Soft-AP connect ok");
             r.set_address(net.source, net.prefix).await?;
             r.link_up().await?;
+            r.prepare_softap(net.source, net.host).await?;
 
             let result = {
-                let mut client = make_http_client(&net);
+                let mut client = make_http_client(&net, device.as_deref());
                 let transport = Transport::Http(&mut client);
                 registry.probe(driver, transport).await
             };
@@ -430,6 +465,7 @@ impl Runtime {
         let net = self.effective_net(driver);
         let radio = Arc::clone(&self.radio);
         let registry = Arc::clone(&self.registry);
+        let device = self.radio_device().map(str::to_owned);
         let _hold = RadioHold::new(self);
         self.rt.handle().block_on(async move {
             let mut r = radio.lock().await;
@@ -437,8 +473,9 @@ impl Runtime {
             r.connect_open(&candidate.ssid, bssid).await?;
             r.set_address(net.source, net.prefix).await?;
             r.link_up().await?;
+            r.prepare_softap(net.source, net.host).await?;
             let result = {
-                let mut client = make_http_client(&net);
+                let mut client = make_http_client(&net, device.as_deref());
                 let transport = Transport::Http(&mut client);
                 registry.blink(driver, transport, count).await
             };
@@ -476,13 +513,21 @@ fn parse_bssid(s: Option<&str>) -> Option<[u8; 6]> {
     Some(out)
 }
 
-fn make_http_client(net: &CommissioningNet) -> BoundedHttpClient {
+fn make_http_client(net: &CommissioningNet, device: Option<&str>) -> BoundedHttpClient {
     let source = SocketAddr::from((net.source, 0));
-    BoundedHttpClient::new(net.host.to_string(), net.port).with_source(source)
+    let mut c = BoundedHttpClient::new(net.host.to_string(), net.port).with_source(source);
+    if let Some(dev) = device {
+        c = c.with_device(dev);
+    }
+    c
 }
 
-fn make_http_client_cancel(net: &CommissioningNet, cancel: Arc<AtomicBool>) -> BoundedHttpClient {
-    make_http_client(net).with_cancel(cancel)
+fn make_http_client_cancel(
+    net: &CommissioningNet,
+    device: Option<&str>,
+    cancel: Arc<AtomicBool>,
+) -> BoundedHttpClient {
+    make_http_client(net, device).with_cancel(cancel)
 }
 
 struct RadioHold<'a> {
@@ -956,9 +1001,22 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         let _ = radio.release().await;
         return;
     }
+    if let Err(e) = radio.prepare_softap(net.source, net.host).await {
+        tracing::warn!(job_id = %id.0, error = %e, "prepare_softap failed");
+        rt.jobs.transition(
+            &id,
+            JobState::Failed,
+            Some("join"),
+            None,
+            Some(&e.to_string()),
+        );
+        let _ = radio.release().await;
+        return;
+    }
     tracing::info!(
         job_id = %id.0,
         target = %format!("{}:{}", net.host, net.port),
+        device = ?rt.radio_device(),
         "radio ready; starting driver program"
     );
 
@@ -980,7 +1038,8 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         id: &id,
     };
     let cancel = spawn_cancel_watch(rt, &id);
-    let mut client = make_http_client_cancel(&net, cancel);
+    let device = rt.radio_device().map(str::to_owned);
+    let mut client = make_http_client_cancel(&net, device.as_deref(), cancel);
     let transport = Transport::Http(&mut client);
     let outcome = match tokio::time::timeout(crate::jobs::JOB_DEADLINE, async {
         rt.registry
@@ -1203,6 +1262,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 &host,
                 80,
                 None,
+                None,
                 Arc::clone(&cancel),
             )
             .await
@@ -1270,6 +1330,17 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 let _ = radio.release().await;
                 return;
             }
+            if let Err(e) = radio.prepare_softap(net.source, net.host).await {
+                rt.jobs.transition(
+                    &id,
+                    JobState::Failed,
+                    Some("join"),
+                    None,
+                    Some(&e.to_string()),
+                );
+                let _ = radio.release().await;
+                return;
+            }
             drop(radio);
             rt.jobs
                 .transition(&id, JobState::Writing, Some("write"), None, None);
@@ -1284,6 +1355,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 &net.host.to_string(),
                 net.port,
                 Some(SocketAddr::from((net.source, 0))),
+                rt.radio_device().map(str::to_owned),
                 Arc::clone(&cancel),
             )
             .await;
@@ -1308,11 +1380,18 @@ async fn firmware_http_with_heartbeats(
     host: &str,
     port: u16,
     source: Option<SocketAddr>,
+    device: Option<String>,
     cancel: Arc<AtomicBool>,
 ) -> Result<wp_core::Outcome, wp_core::DriverError> {
     let tokio_h = rt.handle();
     let registry = Arc::clone(&rt.registry);
-    let client = make_firmware_http_client(host, port, source, Some(Arc::clone(&cancel)));
+    let client = make_firmware_http_client(
+        host,
+        port,
+        source,
+        device.as_deref(),
+        Some(Arc::clone(&cancel)),
+    );
     await_blocking_with_heartbeats(rt, id, sink, "firmware http", cancel, move |_cancel| {
         let mut client = client;
         let mut nop = wp_core::NoProgress;
@@ -1396,6 +1475,7 @@ fn make_firmware_http_client(
     host: &str,
     port: u16,
     source: Option<SocketAddr>,
+    device: Option<&str>,
     cancel: Option<Arc<AtomicBool>>,
 ) -> BoundedHttpClient {
     let mut c = BoundedHttpClient::new(host, port)
@@ -1403,6 +1483,9 @@ fn make_firmware_http_client(
         .with_retries(0);
     if let Some(src) = source {
         c = c.with_source(src);
+    }
+    if let Some(dev) = device {
+        c = c.with_device(dev);
     }
     if let Some(flag) = cancel {
         c = c.with_cancel(flag);

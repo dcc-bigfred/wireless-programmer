@@ -79,3 +79,14 @@ impl Radio for FakeRadio {
         Box::pin(async move { Ok(()) })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fake_radio_has_no_kernel_device() {
+        let radio = FakeRadio::one_per_driver();
+        assert_eq!(radio.device(), None);
+    }
+}

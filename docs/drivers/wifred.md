@@ -22,6 +22,12 @@ The AP runs a web server on port 80 with a built-in DHCP server at
 4. on every exit path (success or failure) disconnects and releases the
    radio.
 
+The HTTP client is bound to the wireless device (`SO_BINDTODEVICE`) and the
+radio installs a policy route plus `accept_local` / `rp_filter` on that
+device, so commissioning works even when the Soft-AP subnet collides with a
+local interface. WiFred's `192.168.4.0/24` does not normally collide with the
+hub LAN; see `docs/drivers/longfred.md` for the case where it does.
+
 ## Capabilities
 
 | Field                    | Value                  |
