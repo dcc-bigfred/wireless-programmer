@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- LongFred Soft-AP commissioning addresses are now `192.168.4.1` / source
+  `192.168.4.2` (ESP-IDF default, same as WiFred). This no longer overlaps
+  the BigFred hub LAN (`192.168.0.0/24`). Requires matching LongFred
+  firmware; older devices at `192.168.0.1` will not program.
+
 ## [v0.2] — 2026-08-22
 
 Hub Soft-AP programming for LongFred (and WiFred) when the device AP shares the

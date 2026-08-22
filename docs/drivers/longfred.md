@@ -7,31 +7,26 @@ programming mode.
 
 In programming mode the firmware raises an **open** WiFi AP named
 `longfred_prog_XXXXXX` (6 hex characters derived from the MAC). The Soft-AP
-uses a static address `192.168.0.1/24` (not the ESP-IDF Soft-AP default of
-`192.168.4.1`) and a DHCP pool `192.168.0.50–200`. The wireless-programmer
+uses a static address `192.168.4.1/24` (ESP-IDF Soft-AP default, same as
+WiFred) and a DHCP pool `192.168.4.50–200`. The wireless-programmer
 source address `.2` is **outside** that pool. The driver advertises this via
 `capabilities.commissioningNet`:
 
 | Field    | Value          |
 |----------|----------------|
-| `host`   | `192.168.0.1`  |
+| `host`   | `192.168.4.1`  |
 | `port`   | `80`           |
-| `source` | `192.168.0.2`  |
+| `source` | `192.168.4.2`  |
 | `prefix` | `24`           |
 
-The daemon should associate to the open AP, assign `192.168.0.2/24` on the
+The daemon should associate to the open AP, assign `192.168.4.2/24` on the
 wireless interface (**no default route**), hand a sync `HttpClient` to the
 driver, and release the radio on every exit path.
 
-> **Address collision with hub LAN.** The BigFred hub serves its own LAN from
-> `192.168.0.1/24`, so `192.168.0.1` is a local address on the hub's Ethernet.
-> The daemon parks `lookup local` at pref 1 and installs
-> `from 192.168.0.2 to 192.168.0.1 lookup 100` at pref 0, with
-> `192.168.0.1/32 dev wlan0` in table 100. The HTTP client binds
-> `192.168.0.2` but **does not** set `SO_BINDTODEVICE` for this destination
-> (that made the kernel RST the SYN-ACK). Inbound still needs
-> `accept_local=1` and `rp_filter=0` on `wlan0`. Restored on radio release;
-> see `wp_link::netcfg`.
+This subnet does **not** overlap the BigFred hub LAN (`192.168.0.0/24`), so
+the `wp_link::netcfg` policy-route path for a locally-owned destination is
+not needed for LongFred. The radio still installs the generic Soft-AP
+sysctls; they are a no-op when `host` is not a local address.
 
 Candidate identity: SSID prefix `longfred_prog`, stable key = BSSID.
 
@@ -45,7 +40,7 @@ Candidate identity: SSID prefix `longfred_prog`, stable key = BSSID.
 | `supportsThrottleServer` | true (field accepted, unused)      |
 | `supportsFirmwareUpdate` | true                               |
 | `commissioning`          | `SoftAp`                           |
-| `commissioningNet`       | `192.168.0.1` / source `.2` /24    |
+| `commissioningNet`       | `192.168.4.1` / source `.2` /24    |
 
 `identity` is written as `wifi.hostname`. BigFred authentication uses the
 optional `bigfred.login` / `bigfred.pin` fields on `ProgramRequest` (not the

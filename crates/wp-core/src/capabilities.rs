@@ -43,11 +43,11 @@ impl From<CommissioningKind> for CommissioningKindWire {
 /// daemon keeps its historical defaults (`192.168.4.1` / `192.168.4.2/24`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommissioningNet {
-    /// Device Soft-AP address (e.g. `192.168.0.1`).
+    /// Device Soft-AP address (e.g. `192.168.4.1`).
     pub host: Ipv4Addr,
     /// HTTP port on the Soft-AP (typically 80).
     pub port: u16,
-    /// Address the hub assigns on the wireless interface (e.g. `192.168.0.2`).
+    /// Address the hub assigns on the wireless interface (e.g. `192.168.4.2`).
     pub source: Ipv4Addr,
     /// Prefix length for the on-link route (typically 24).
     pub prefix: u8,
