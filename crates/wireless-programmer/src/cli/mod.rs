@@ -7,11 +7,70 @@ mod program;
 
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use tracing_subscriber::EnvFilter;
 use wp_client::ClientError;
 
 pub use daemon::{run_daemon, DaemonArgs};
 pub use fake::{run_fake, FakeArgs};
+
+/// Log filter for the daemon and `fake` subcommands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum LogLevel {
+    /// `error` — failures only.
+    Error,
+    /// `warn` — failures and recoverable problems.
+    Warn,
+    /// `info` — default operational log.
+    Info,
+    /// `debug` — radio scan BSS, trigger details (`-v`).
+    Debug,
+    /// `trace` — most verbose.
+    Trace,
+}
+
+impl LogLevel {
+    /// EnvFilter directive for this level.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
+/// Explicit filter from `--log-level` / `-v`, or `None` to honour `RUST_LOG`.
+#[must_use]
+pub fn log_filter_directive(verbose: bool, log_level: Option<LogLevel>) -> Option<&'static str> {
+    if let Some(level) = log_level {
+        Some(level.as_str())
+    } else if verbose {
+        Some("debug")
+    } else {
+        None
+    }
+}
+
+/// Build the tracing EnvFilter: `--log-level`, else `-v` → debug, else `RUST_LOG`, else `info`.
+#[must_use]
+pub fn resolve_env_filter(verbose: bool, log_level: Option<LogLevel>) -> EnvFilter {
+    match log_filter_directive(verbose, log_level) {
+        Some(d) => EnvFilter::new(d),
+        None => EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    }
+}
+
+/// Initialise `tracing-subscriber` (and the `log` crate bridge).
+pub fn init_tracing(verbose: bool, log_level: Option<LogLevel>) {
+    tracing_subscriber::fmt()
+        .with_env_filter(resolve_env_filter(verbose, log_level))
+        .init();
+}
 
 /// Command-line interface.
 #[derive(Debug, Parser)]
@@ -29,9 +88,17 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub socket: Option<PathBuf>,
 
-    /// Verbose logging (daemon only).
+    /// Verbose logging (daemon / fake only). Same as `--log-level debug`
+    /// when `--log-level` is omitted.
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Log filter (daemon / fake only): error, warn, info, debug, or trace.
+    ///
+    /// Overrides `-v` / `--verbose`. When omitted, `RUST_LOG` is honoured,
+    /// otherwise `info`.
+    #[arg(long = "log-level", value_enum, value_name = "LEVEL")]
+    pub log_level: Option<LogLevel>,
 
     /// Wireless interface for the daemon (e.g. `wlan0`). Also accepted on
     /// `daemon --interface`. Overrides `WIRELESS_PROGRAMMER_INTERFACE`.
@@ -300,4 +367,41 @@ pub(crate) fn build_client(
 /// Dispatch a client subcommand.
 pub fn run_client(command: Command, socket: Option<PathBuf>) -> std::process::ExitCode {
     client::run(command, socket)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_level_overrides_verbose() {
+        assert_eq!(
+            log_filter_directive(true, Some(LogLevel::Warn)),
+            Some("warn")
+        );
+        assert_eq!(
+            log_filter_directive(false, Some(LogLevel::Trace)),
+            Some("trace")
+        );
+    }
+
+    #[test]
+    fn verbose_is_debug_when_no_log_level() {
+        assert_eq!(log_filter_directive(true, None), Some("debug"));
+        assert_eq!(log_filter_directive(false, None), None);
+    }
+
+    #[test]
+    fn log_level_as_str_matches_envfilter() {
+        for level in [
+            LogLevel::Error,
+            LogLevel::Warn,
+            LogLevel::Info,
+            LogLevel::Debug,
+            LogLevel::Trace,
+        ] {
+            let filter = resolve_env_filter(false, Some(level));
+            assert_eq!(filter.to_string(), level.as_str());
+        }
+    }
 }

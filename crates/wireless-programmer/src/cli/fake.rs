@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Parser;
-use tracing_subscriber::EnvFilter;
+
+use super::{init_tracing, LogLevel};
 
 /// `fake` arguments — runs only the Soft-AP HTTP mock (no daemon / radio / IPC).
 #[derive(Debug, Parser)]
@@ -18,19 +19,21 @@ pub struct FakeArgs {
     #[arg(long, default_value = "127.0.0.1:8070")]
     pub bind: SocketAddr,
 
-    /// Verbose logging.
+    /// Verbose logging. Same as `--log-level debug` when `--log-level` is omitted.
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Log filter: error, warn, info, debug, or trace.
+    ///
+    /// Overrides `-v` / `--verbose`. When omitted, `RUST_LOG` is honoured,
+    /// then `info`.
+    #[arg(long = "log-level", value_enum, value_name = "LEVEL")]
+    pub log_level: Option<LogLevel>,
 }
 
 /// Run a standalone fake Soft-AP HTTP server until Ctrl-C.
 pub fn run_fake(args: FakeArgs) -> ExitCode {
-    let filter = if args.verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("info")
-    };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    init_tracing(args.verbose, args.log_level);
 
     let device: Arc<tokio::sync::Mutex<dyn wp_fake::FakeDevice>> = match args.driver.as_str() {
         "wifred" => Arc::new(tokio::sync::Mutex::new(wp_fake::WifredFake::new())),

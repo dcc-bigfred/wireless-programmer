@@ -53,8 +53,9 @@ package version. `commit` is the matching tag/build commit when available.
 
 Optional `params.mode` is `"ap"` (default), `"lan"`, `"usb"`, or `"z21"`.
 
-Soft-AP (`ap`) triggers an nl80211 scan and returns the candidates each
-driver claims:
+Soft-AP (`ap`) triggers an **active** nl80211 scan (wildcard probe, like
+`iw scan`), brings the wireless interface up, waits for
+`NEW_SCAN_RESULTS`, and returns the candidates each driver claims:
 
 - WiFred: every AP whose SSID starts with `wiFred-config`
 - LongFred: every AP whose SSID starts with `longfred_prog`

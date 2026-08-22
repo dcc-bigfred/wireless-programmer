@@ -6,7 +6,6 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use clap::Args;
-use tracing_subscriber::EnvFilter;
 use wp_link::{Nl80211Radio, Radio};
 
 use crate::config::Config;
@@ -15,12 +14,21 @@ use crate::ipc::Server;
 use crate::jobs::JobRegistry;
 use crate::runtime::Runtime;
 
+use super::{init_tracing, LogLevel};
+
 /// `daemon` arguments.
 #[derive(Debug, Clone, Default, Args)]
 pub struct DaemonArgs {
-    /// Verbose logging.
+    /// Verbose logging. Same as `--log-level debug` when `--log-level` is omitted.
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Log filter: error, warn, info, debug, or trace.
+    ///
+    /// Overrides `-v` / `--verbose`. When omitted, `RUST_LOG` is honoured,
+    /// then `info`.
+    #[arg(long = "log-level", value_enum, value_name = "LEVEL")]
+    pub log_level: Option<LogLevel>,
 
     /// Wireless interface to use (e.g. `wlan0`, `wlp2s0`).
     ///
@@ -52,12 +60,7 @@ pub struct DaemonArgs {
 
 /// Run the IPC daemon until shutdown.
 pub fn run_daemon(args: DaemonArgs, socket_override: Option<PathBuf>) -> ExitCode {
-    let filter = if args.verbose {
-        EnvFilter::new("debug")
-    } else {
-        EnvFilter::new("info")
-    };
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    init_tracing(args.verbose, args.log_level);
 
     let mut cfg = Config::default();
     if let Some(s) = socket_override {

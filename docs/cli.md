@@ -25,7 +25,11 @@ Options:
                               use `fake` for in-process FakeRadio + Soft-AP mock
       --require-auth          Enforce SO_PEERCRED allowlist (daemon only; off by default)
       --allow-users <USERS>   Comma-separated allowlist (implies --require-auth)
-  -v, --verbose               Verbose logging (daemon only)
+  -v, --verbose               Verbose logging (daemon / fake only); same as
+                              `--log-level debug` when `--log-level` is omitted
+      --log-level <LEVEL>     Log filter (daemon / fake only): error, warn, info,
+                              debug, or trace. When omitted, `RUST_LOG` is honoured,
+                              otherwise `info`
   -h, --help                  Print help
   -V, --version               Print version
 ```
@@ -76,7 +80,8 @@ has a `wireless` subdirectory. On a hub with more than one radio, pin it:
 
 ```bash
 wireless-programmer --interface wlan1
-wireless-programmer daemon -i wlp2s0 --verbose
+wireless-programmer daemon -i wlp2s0 --log-level debug
+wireless-programmer daemon --verbose
 ```
 
 `--interface` / `-i` is accepted both at the top level (when starting the
@@ -129,6 +134,16 @@ nothing matches; pipe `--json` for scripting:
 ```bash
 wireless-programmer scan --json | jq '.[] | select(.rssi != null) | .key'
 ```
+
+Human `scan` prints `no candidates found` when the daemon returned an empty
+list. That is success, not `scan_failed`: the radio scan ran, but no SSID
+started with `longfred_prog` or `wiFred-config`. Soft-AP discovery uses an
+**active** nl80211 scan (wildcard probe, like `iw scan`), brings `wlan0` up,
+and waits for `NEW_SCAN_RESULTS`. `--log-level debug` on the **daemon** logs
+every raw BSS; at `info`, a scan that saw APs but no matching prefix says so
+explicitly. Trigger failures (`ENETDOWN`, busy, permission) are `scan_failed`,
+not an empty list. One-shot `scan` does not take `--log-level` — restart the
+daemon with it.
 
 ## Firmware update
 
@@ -348,6 +363,7 @@ remain machine-parseable.
 | `WIRELESS_PROGRAMMER_ALLOW_USERS` | Comma-separated peer allowlist (used when auth is on; default `bigfred,bigfred-wizard`) |
 | `WIRELESS_PROGRAMMER_SOCKET_GROUP_USER` | Login name whose primary group owns the socket (daemon only; defaults to the first allowlist entry when auth is on) |
 | `WIRELESS_PROGRAMMER_INTERFACE` | Wireless interface name for the daemon (e.g. `wlan0`); overridden by `--interface` |
+| `RUST_LOG` | Tracing filter when `--log-level` / `-v` are omitted (daemon / fake). Default `info` |
 | `WIRELESS_PROGRAMMER_GIT_COMMIT` | Git commit baked into the `hello` response (build-time) |
 | `WIRELESS_PROGRAMMER_BUILD_TIME` | UTC build timestamp baked into version metadata (build-time, optional) |
 

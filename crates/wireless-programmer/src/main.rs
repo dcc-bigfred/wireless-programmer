@@ -17,6 +17,9 @@ fn main() -> ExitCode {
             if !args.verbose {
                 args.verbose = cli.verbose;
             }
+            if args.log_level.is_none() {
+                args.log_level = cli.log_level;
+            }
             if !args.require_auth {
                 args.require_auth = cli.require_auth;
             }
@@ -29,12 +32,16 @@ fn main() -> ExitCode {
             if !args.verbose {
                 args.verbose = cli.verbose;
             }
+            if args.log_level.is_none() {
+                args.log_level = cli.log_level;
+            }
             cli::run_fake(args)
         }
         Some(command) => cli::run_client(command, cli.socket),
         None => cli::run_daemon(
             cli::DaemonArgs {
                 verbose: cli.verbose,
+                log_level: cli.log_level,
                 interface: cli.interface,
                 require_auth: cli.require_auth,
                 allow_users: cli.allow_users,
