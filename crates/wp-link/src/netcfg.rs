@@ -1,10 +1,13 @@
 //! Interface-scoped IPv4 settings needed when a device Soft-AP shares a
 //! subnet with the hub's own LAN.
 //!
-//! The LongFred Soft-AP serves `192.168.0.1/24`, which is also the BigFred
-//! hub's LAN address. Three kernel behaviours break the HTTP conversation:
+//! Historically the LongFred Soft-AP served `192.168.0.1/24`, the same
+//! address as the BigFred hub LAN. Current LongFred firmware uses
+//! `192.168.4.1/24` (no overlap). The helpers below still apply whenever
+//! `host` is a locally-owned address — three kernel behaviours then break
+//! the HTTP conversation:
 //!
-//! 1. **Outbound SYN** — a route lookup for `192.168.0.1` hits the `local`
+//! 1. **Outbound SYN** — a route lookup for the Soft-AP IP hits the `local`
 //!    table first (pref 0) and delivers to loopback. `SO_BINDTODEVICE` does
 //!    **not** override that: `from all lookup local` has no oif filter.
 //!    ICMP "success" with a local route is the hub answering its own address.

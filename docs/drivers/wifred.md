@@ -26,7 +26,7 @@ The HTTP client is bound to the wireless device (`SO_BINDTODEVICE`) and the
 radio installs a policy route plus `accept_local` / `rp_filter` on that
 device, so commissioning works even when the Soft-AP subnet collides with a
 local interface. WiFred's `192.168.4.0/24` does not normally collide with the
-hub LAN; see `docs/drivers/longfred.md` for the case where it does.
+hub LAN; LongFred now uses the same `192.168.4.0/24` subnet.
 
 ## Capabilities
 

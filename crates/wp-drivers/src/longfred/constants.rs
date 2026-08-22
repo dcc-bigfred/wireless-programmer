@@ -11,10 +11,10 @@ pub const WIFI_CONFIG_SSID_PREFIX: &str = "longfred_prog";
 pub const CONFIG_AP_PORT: u16 = 80;
 
 /// Config AP address (firmware static Soft-AP IP).
-pub const CONFIG_HOST: Ipv4Addr = Ipv4Addr::new(192, 168, 0, 1);
+pub const CONFIG_HOST: Ipv4Addr = Ipv4Addr::new(192, 168, 4, 1);
 
 /// Source address the daemon assigns to the wireless interface.
-pub const CONFIG_SOURCE: Ipv4Addr = Ipv4Addr::new(192, 168, 0, 2);
+pub const CONFIG_SOURCE: Ipv4Addr = Ipv4Addr::new(192, 168, 4, 2);
 
 /// On-link prefix length for the config AP subnet.
 pub const CONFIG_PREFIX_LEN: u8 = 24;

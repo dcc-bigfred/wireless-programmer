@@ -2,7 +2,7 @@
 //!
 //! Implements [`wp_core::DeviceDriver`] for LongFred throttles in programming
 //! mode. The firmware raises an open Soft-AP named `longfred_prog_XXXXXX` with
-//! a static address `192.168.0.1/24` and serves:
+//! a static address `192.168.4.1/24` and serves:
 //!
 //! - `GET  /api/v1/settings`
 //! - `PUT  /api/v1/settings`

@@ -2,7 +2,7 @@
 //!
 //! Plain HTTP only — Soft-AP config pages serve on an on-link address with no
 //! TLS. The client binds to a caller-supplied source address (e.g.
-//! `192.168.4.2` or `192.168.0.2`) so requests leave the wireless interface,
+//! `192.168.4.2`) so requests leave the wireless interface,
 //! and enforces a deadline, a maximum response body size, and a bounded retry
 //! count.
 
@@ -89,8 +89,9 @@ impl BoundedHttpClient {
     /// Remember the wireless interface name for diagnostics and for
     /// `SO_BINDTODEVICE` when the destination is **not** a local address.
     ///
-    /// When the Soft-AP IP is also assigned on another interface (LongFred
-    /// `192.168.0.1` vs hub LAN), `SO_BINDTODEVICE` must **not** be set:
+    /// When the Soft-AP IP is also assigned on another interface (e.g. a
+    /// device AP at `192.168.0.1` vs hub LAN), `SO_BINDTODEVICE` must **not**
+    /// be set:
     /// the SYN-ACK's source is a local address, so the kernel may deliver
     /// it with `skb->dev = lo`, and a socket bound to `wlan0` will not match
     /// — Linux then generates RST (`Connection reset by peer`). Output is
