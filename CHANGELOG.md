@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.2] — 2026-08-22
+
+Hub Soft-AP programming for LongFred (and WiFred) when the device AP shares the
+hub's LAN subnet — e.g. LongFred at `192.168.0.1` on a hub whose Ethernet is
+also `192.168.0.0/24`. Includes policy routing, sysctl tuning, HTTP client
+framing for embassy-net RST-after-respond, active scan, association verification,
+`--log-level`, and `make hub-upload` for `/data/opt` on read-only hub rootfs.
+
 ### Fixed
 
 - Soft-AP radio scan on Raspberry Pi 5 / brcmfmac: bring the interface up
@@ -63,6 +71,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   omitted). Scan logs the interface state, trigger result, and raw BSS
   count; at `debug` every SSID; at `info` when APs were seen but none
   matched `longfred_prog` / `wiFred-config`.
+- `make hub-upload` — cross-build musl arm64 and deploy to
+  `/data/opt/wireless-programmer/` on the hub (`scp -O` for Dropbear).
+
+### Assets
+
+Static **linux/arm64** and **linux/amd64** musl binaries (`wireless-programmer-linux-*`).
+Hub operators can update without reflashing OS: `make hub-upload` to
+`/data/opt/wireless-programmer/` (see [bigfred-os](https://github.com/dcc-bigfred/bigfred-os)).
 
 ## [v0.1] — 2026-08-21
 
