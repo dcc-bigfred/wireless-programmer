@@ -138,6 +138,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
+name = "dcc-daemon"
+version = "0.1.0"
+source = "git+https://github.com/dcc-bigfred/rust-commons.git?rev=bdc4155f124f82ce59c9a8801b4952be8e06f4a2#bdc4155f124f82ce59c9a8801b4952be8e06f4a2"
+dependencies = [
+ "log",
+ "nix 0.29.0",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1031,9 +1043,10 @@ dependencies = [
 
 [[package]]
 name = "wireless-programmer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
+ "dcc-daemon",
  "humantime",
  "libc",
  "log",
@@ -1073,8 +1086,9 @@ dependencies = [
 
 [[package]]
 name = "wp-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "dcc-daemon",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -1083,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "wp-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1093,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "wp-drivers"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "quick-xml",
@@ -1108,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "wp-fake"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "log",
  "parking_lot",
@@ -1123,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "wp-link"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "futures",
  "libc",
@@ -1140,11 +1154,11 @@ dependencies = [
 
 [[package]]
 name = "wp-proto"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "dcc-daemon",
  "serde",
  "serde_json",
- "thiserror 2.0.20",
 ]
 
 [[package]]

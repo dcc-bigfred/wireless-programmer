@@ -8,7 +8,7 @@ export RUSTUP_TOOLCHAIN
 # Optional wireless iface for `make dev` (e.g. INTERFACE=wlan0).
 INTERFACE ?=
 
-.PHONY: all build release release-musl check test test-release-assertions clean fmt clippy dev
+.PHONY: all build release release-musl check test test-release-assertions clean fmt clippy dev deps-update
 
 all: build
 
@@ -53,6 +53,10 @@ fmt:
 
 clippy:
 	$(CARGO) clippy --workspace --all-targets --locked -- -D warnings
+
+# Refresh git crates (dcc-daemon) and rewrite Cargo.lock. Commit the lockfile afterwards.
+deps-update:
+	$(CARGO) update -p dcc-daemon
 
 clean:
 	$(CARGO) clean

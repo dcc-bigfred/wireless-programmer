@@ -196,13 +196,12 @@ fn resolve_fake_web_port_env() -> Option<u16> {
 
 /// Resolve the BigFred data directory.
 pub fn resolve_data_dir() -> PathBuf {
-    if let Ok(d) = std::env::var("BIGFRED_DATA_DIR") {
-        return PathBuf::from(d);
-    }
-    if let Ok(d) = std::env::var("DATA_DIR") {
-        return PathBuf::from(d);
-    }
-    PathBuf::from("/data")
+    dcc_daemon::DataDir::resolve(
+        dcc_daemon::EnvPolicy::BigfredThenDataDir,
+        dcc_daemon::PathRule::AcceptAny,
+    )
+    .as_path()
+    .to_path_buf()
 }
 
 #[cfg(test)]
