@@ -135,17 +135,21 @@ impl Command<ServerInner> for JobWatchCmd {
 struct WpHooks;
 
 impl ErrorHandler<ServerInner> for WpHooks {
-    fn unknown(
-        &self,
-        _state: &ServerInner,
-        type_name: &str,
-        _body: &Value,
-        _conn: &mut Connection,
-    ) {
+    fn unknown(&self, _state: &ServerInner, type_name: &str, _body: &Value, conn: &mut Connection) {
         tracing::warn!("unknown ipc type {type_name}");
+        let _ = conn.reply(&err_response(
+            RequestKind::Hello,
+            "unknown_type",
+            &format!("unknown type `{type_name}`"),
+        ));
     }
-    fn error(&self, _state: &ServerInner, err: &IpcError, _conn: &mut Connection) {
+    fn error(&self, _state: &ServerInner, err: &IpcError, conn: &mut Connection) {
         tracing::warn!("connection error: {err}");
+        let _ = conn.reply(&err_response(
+            RequestKind::Hello,
+            "internal",
+            &err.to_string(),
+        ));
     }
     fn reject(&self, _state: &ServerInner, reason: RejectReason, conn: &mut Connection) {
         if reason == RejectReason::Auth {
@@ -833,5 +837,19 @@ bigfred:x:1000:1001:BigFred loco-server:/home/bigfred:/bin/false
             ..Config::default()
         };
         assert_eq!(cfg.socket_group_owner(), None);
+    }
+
+    #[test]
+    fn error_frame_is_a_readable_response() {
+        let (mut a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
+        wp_proto::write_frame(
+            &mut a,
+            &err_response(RequestKind::Hello, "unknown_type", "unknown type `nope`"),
+        )
+        .unwrap();
+        let resp: Response = wp_proto::read_frame(&mut b).unwrap();
+        let err = resp.error.expect("error body");
+        assert_eq!(err.code, "unknown_type");
+        assert!(err.message.contains("nope"));
     }
 }
