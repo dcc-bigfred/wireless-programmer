@@ -50,9 +50,9 @@ impl Client {
 
     /// Resolve the daemon socket path from the environment.
     pub fn resolve_socket() -> PathBuf {
-        dcc_daemon::DataDir::resolve(
-            dcc_daemon::EnvPolicy::BigfredThenDataDir,
-            dcc_daemon::PathRule::AcceptAny,
+        bigfred_shared_daemon::DataDir::resolve(
+            bigfred_shared_daemon::EnvPolicy::BigfredThenDataDir,
+            bigfred_shared_daemon::PathRule::AcceptAny,
         )
         .run_nested_socket("wireless-programmer")
     }

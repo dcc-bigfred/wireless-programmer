@@ -1,6 +1,6 @@
 //! Length-prefixed JSON framing codec.
 
-pub use dcc_daemon::ipc::{
+pub use bigfred_shared_daemon::ipc::{
     read_frame, write_frame, FrameError, DEFAULT_MAX_FRAME_BYTES as MAX_FRAME_BYTES,
 };
 

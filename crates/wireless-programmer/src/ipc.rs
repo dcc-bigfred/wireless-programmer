@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
-use dcc_daemon::ipc::{
+use bigfred_shared_daemon::ipc::{
     AcceptPolicy, Auth, BindOptions, Command, Connection, ErrorHandler, IpcError, RejectReason,
     Router, SessionMode,
 };
@@ -41,7 +41,7 @@ impl Server {
     pub fn run(self) -> io::Result<()> {
         let cfg = self.runtime.config();
         let socket = cfg.socket.clone();
-        let listener = dcc_daemon::ipc::bind(&BindOptions {
+        let listener = bigfred_shared_daemon::ipc::bind(&BindOptions {
             path: socket.clone(),
             mode: cfg.socket_mode,
             chown: None,
@@ -61,7 +61,7 @@ impl Server {
             Auth::None
         };
 
-        let server = dcc_daemon::ipc::Server::from_listener(
+        let server = bigfred_shared_daemon::ipc::Server::from_listener(
             listener,
             socket,
             AcceptPolicy {
@@ -162,7 +162,7 @@ impl ErrorHandler<ServerInner> for WpHooks {
     }
 }
 
-fn wp_router() -> Result<Router<ServerInner>, dcc_daemon::ipc::DuplicateCommand> {
+fn wp_router() -> Result<Router<ServerInner>, bigfred_shared_daemon::ipc::DuplicateCommand> {
     let mut router = Router::new();
     router.add(HelloCmd)?;
     router.add(ScanCmd)?;

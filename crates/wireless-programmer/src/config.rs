@@ -196,9 +196,9 @@ fn resolve_fake_web_port_env() -> Option<u16> {
 
 /// Resolve the BigFred data directory.
 pub fn resolve_data_dir() -> PathBuf {
-    dcc_daemon::DataDir::resolve(
-        dcc_daemon::EnvPolicy::BigfredThenDataDir,
-        dcc_daemon::PathRule::AcceptAny,
+    bigfred_shared_daemon::DataDir::resolve(
+        bigfred_shared_daemon::EnvPolicy::BigfredThenDataDir,
+        bigfred_shared_daemon::PathRule::AcceptAny,
     )
     .as_path()
     .to_path_buf()
