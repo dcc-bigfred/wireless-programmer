@@ -12,7 +12,7 @@ wp-proto = { path = "../wp-proto" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-dcc-daemon = { git = "https://github.com/dcc-bigfred/rust-commons.git", rev = "bdc4155f124f82ce59c9a8801b4952be8e06f4a2", default-features = false }
+dcc-daemon = { git = "https://github.com/dcc-bigfred/rust-commons.git", branch = "main", default-features = false }
 
 [lints]
 workspace = true
