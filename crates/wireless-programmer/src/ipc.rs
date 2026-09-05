@@ -7,16 +7,16 @@
 //! checked against an allowlist via `SO_PEERCRED`.
 
 use std::io;
-use std::os::unix::fs::PermissionsExt;
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::sync::Arc;
 
-use nix::sys::socket::{getsockopt, sockopt::PeerCredentials};
-use nix::unistd::{chown, Gid};
-use wp_proto::{
-    read_frame, write_frame, ErrorBody, Params, Request, RequestKind, Response, ResultBody,
+use bigfred_shared_daemon::ipc::{
+    AcceptPolicy, Auth, BindOptions, Command, Connection, ErrorHandler, IpcError, RejectReason,
+    Router, SessionMode,
 };
+use nix::unistd::{chown, Gid};
+use serde_json::Value;
+use wp_proto::{ErrorBody, Params, Request, RequestKind, Response, ResultBody, MAX_FRAME_BYTES};
 
 use crate::config::Config;
 use crate::jobs::JobState;
@@ -39,34 +39,142 @@ impl Server {
     ///
     /// Returns [`io::Error`] on bind/listen failure.
     pub fn run(self) -> io::Result<()> {
-        let socket = self.runtime.config().socket.clone();
-        if let Some(parent) = socket.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        if socket.exists() {
-            std::fs::remove_file(&socket)?;
-        }
-        let listener = UnixListener::bind(&socket)?;
-        let perms = std::fs::Permissions::from_mode(self.runtime.config().socket_mode);
-        std::fs::set_permissions(&socket, perms)?;
-        set_socket_group(&socket, self.runtime.config());
+        let cfg = self.runtime.config();
+        let socket = cfg.socket.clone();
+        let listener = bigfred_shared_daemon::ipc::bind(&BindOptions {
+            path: socket.clone(),
+            mode: cfg.socket_mode,
+            chown: None,
+            process_name: "wireless-programmer",
+        })
+        .map_err(|e| io::Error::other(e.to_string()))?;
+        set_socket_group(&socket, cfg);
         tracing::info!("listening on {}", socket.display());
 
-        let inner = Arc::new(ServerInner {
-            runtime: self.runtime,
-        });
+        let auth = if cfg.require_auth {
+            Auth::PeerUser {
+                allow_users: cfg.allow_users.clone(),
+                root_always: false,
+                fail_closed_if_empty: true,
+            }
+        } else {
+            Auth::None
+        };
 
-        for stream in listener.incoming() {
-            let stream = stream?;
-            let inner = Arc::clone(&inner);
-            std::thread::spawn(move || {
-                if let Err(e) = inner.handle_conn(stream) {
-                    tracing::warn!("connection error: {e}");
-                }
-            });
-        }
+        let server = bigfred_shared_daemon::ipc::Server::from_listener(
+            listener,
+            socket,
+            AcceptPolicy {
+                auth,
+                session: SessionMode::Persistent,
+                max_clients: None,
+                max_frame: MAX_FRAME_BYTES,
+            },
+            wp_router().map_err(io::Error::other)?,
+            WpHooks,
+        );
+        server.serve(Arc::new(ServerInner {
+            runtime: self.runtime,
+        }));
         Ok(())
     }
+}
+
+macro_rules! wp_cmd {
+    ($ty:ident, $name:literal) => {
+        struct $ty;
+        impl Command<ServerInner> for $ty {
+            fn name(&self) -> &'static str {
+                $name
+            }
+            fn execute(
+                &self,
+                inner: &ServerInner,
+                body: Value,
+                conn: &mut Connection,
+            ) -> Result<(), IpcError> {
+                let req: Request =
+                    serde_json::from_value(body).map_err(|e| IpcError::Other(e.to_string()))?;
+                let resp = inner.dispatch(req);
+                conn.reply(&resp).map_err(IpcError::from)
+            }
+        }
+    };
+}
+
+wp_cmd!(HelloCmd, "hello");
+wp_cmd!(ScanCmd, "scan");
+wp_cmd!(ProbeCmd, "probe");
+wp_cmd!(ProgramCmd, "program");
+wp_cmd!(JobGetCmd, "job.get");
+wp_cmd!(JobCancelCmd, "job.cancel");
+wp_cmd!(IdentifyCmd, "identify");
+wp_cmd!(LinkStatusCmd, "link.status");
+wp_cmd!(UpdateFirmwareCmd, "updateFirmware");
+
+struct JobWatchCmd;
+
+impl Command<ServerInner> for JobWatchCmd {
+    fn name(&self) -> &'static str {
+        "job.watch"
+    }
+    fn execute(
+        &self,
+        inner: &ServerInner,
+        body: Value,
+        conn: &mut Connection,
+    ) -> Result<(), IpcError> {
+        let req: Request =
+            serde_json::from_value(body).map_err(|e| IpcError::Other(e.to_string()))?;
+        inner.stream_job_watch(conn, req)?;
+        // Original handler closed the connection after the stream.
+        Err(IpcError::Hangup)
+    }
+}
+
+struct WpHooks;
+
+impl ErrorHandler<ServerInner> for WpHooks {
+    fn unknown(&self, _state: &ServerInner, type_name: &str, _body: &Value, conn: &mut Connection) {
+        tracing::warn!("unknown ipc type {type_name}");
+        let _ = conn.reply(&err_response(
+            RequestKind::Hello,
+            "unknown_type",
+            &format!("unknown type `{type_name}`"),
+        ));
+    }
+    fn error(&self, _state: &ServerInner, err: &IpcError, conn: &mut Connection) {
+        tracing::warn!("connection error: {err}");
+        let _ = conn.reply(&err_response(
+            RequestKind::Hello,
+            "internal",
+            &err.to_string(),
+        ));
+    }
+    fn reject(&self, _state: &ServerInner, reason: RejectReason, conn: &mut Connection) {
+        if reason == RejectReason::Auth {
+            let _ = conn.reply(&err_response(
+                RequestKind::Hello,
+                "forbidden",
+                "peer not allowed",
+            ));
+        }
+    }
+}
+
+fn wp_router() -> Result<Router<ServerInner>, bigfred_shared_daemon::ipc::DuplicateCommand> {
+    let mut router = Router::new();
+    router.add(HelloCmd)?;
+    router.add(ScanCmd)?;
+    router.add(ProbeCmd)?;
+    router.add(ProgramCmd)?;
+    router.add(JobGetCmd)?;
+    router.add(JobWatchCmd)?;
+    router.add(JobCancelCmd)?;
+    router.add(IdentifyCmd)?;
+    router.add(LinkStatusCmd)?;
+    router.add(UpdateFirmwareCmd)?;
+    Ok(router)
 }
 
 struct ServerInner {
@@ -74,103 +182,46 @@ struct ServerInner {
 }
 
 impl ServerInner {
-    fn handle_conn(&self, mut stream: UnixStream) -> io::Result<()> {
-        if !self.peer_allowed(&stream) {
-            let _ = write_frame(
-                &mut stream,
-                &err_response(RequestKind::Hello, "forbidden", "peer not allowed"),
-            );
-            return Ok(());
-        }
-        loop {
-            let req: Request = match read_frame(&mut stream) {
-                Ok(r) => r,
-                Err(wp_proto::FrameError::UnexpectedEof { .. }) => return Ok(()),
-                Err(e) => {
-                    tracing::warn!("frame read error: {e}");
-                    return Ok(());
-                }
-            };
-            // JobWatch streams many frames on one connection until terminal.
-            if req.kind == RequestKind::JobWatch {
-                if let Err(e) = self.stream_job_watch(&mut stream, req) {
-                    tracing::warn!("job.watch stream error: {e}");
-                }
-                return Ok(());
-            }
-            let resp = self.dispatch(req);
-            if let Err(e) = write_frame(&mut stream, &resp) {
-                tracing::warn!("frame write error: {e}");
-                return Ok(());
-            }
-        }
-    }
-
-    fn peer_allowed(&self, stream: &UnixStream) -> bool {
-        let cfg = self.runtime.config();
-        if !cfg.require_auth {
-            return true;
-        }
-        if cfg.allow_users.is_empty() {
-            // Auth on with an empty list should never happen after
-            // finalize_auth, but fail closed.
-            return false;
-        }
-        let creds = match getsockopt(stream, PeerCredentials) {
-            Ok(c) => c,
-            Err(_) => return false,
-        };
-        let uid = creds.uid();
-        let name = username_for_uid(uid);
-        match name {
-            Some(n) => cfg.allow_users.iter().any(|u| u == &n),
-            None => false,
-        }
-    }
-
-    fn stream_job_watch(&self, stream: &mut UnixStream, req: Request) -> io::Result<()> {
-        let write = |stream: &mut UnixStream, resp: &Response| {
-            write_frame(stream, resp).map_err(|e| io::Error::other(e.to_string()))
-        };
+    fn stream_job_watch(&self, conn: &mut Connection, req: Request) -> Result<(), IpcError> {
         let job_id = match req.params {
             Some(Params::Job(p)) => crate::jobs::JobId(p.job_id),
             _ => {
-                write(
-                    stream,
-                    &err_response(RequestKind::JobWatch, "bad_params", "missing params"),
-                )?;
+                conn.reply(&err_response(
+                    RequestKind::JobWatch,
+                    "bad_params",
+                    "missing params",
+                ))?;
                 return Ok(());
             }
         };
         if self.runtime.jobs().snapshot(&job_id).is_none() {
-            write(
-                stream,
-                &err_response(RequestKind::JobWatch, "not_found", "no such job"),
-            )?;
+            conn.reply(&err_response(
+                RequestKind::JobWatch,
+                "not_found",
+                "no such job",
+            ))?;
             return Ok(());
         }
         let mut since = 0usize;
         let mut sent_snapshot = false;
         loop {
             let Some(frames) = self.runtime.jobs().frames_since(&job_id, since) else {
-                write(
-                    stream,
-                    &err_response(RequestKind::JobWatch, "not_found", "no such job"),
-                )?;
+                conn.reply(&err_response(
+                    RequestKind::JobWatch,
+                    "not_found",
+                    "no such job",
+                ))?;
                 return Ok(());
             };
             let mut terminal = false;
             for f in &frames {
                 let wire = job_frame_to_wire(f);
                 terminal = wire.state.is_terminal();
-                write(
-                    stream,
-                    &Response {
-                        kind: RequestKind::JobWatch,
-                        result: Some(ResultBody::JobWatch(wire)),
-                        error: None,
-                    },
-                )?;
+                conn.reply(&Response {
+                    kind: RequestKind::JobWatch,
+                    result: Some(ResultBody::JobWatch(wire)),
+                    error: None,
+                })?;
             }
             since += frames.len();
             if terminal {
@@ -183,14 +234,11 @@ impl ServerInner {
                 if let Some(s) = self.runtime.jobs().snapshot(&job_id) {
                     let wire = snapshot_to_frame(s);
                     let terminal = wire.state.is_terminal();
-                    write(
-                        stream,
-                        &Response {
-                            kind: RequestKind::JobWatch,
-                            result: Some(ResultBody::JobWatch(wire)),
-                            error: None,
-                        },
-                    )?;
+                    conn.reply(&Response {
+                        kind: RequestKind::JobWatch,
+                        result: Some(ResultBody::JobWatch(wire)),
+                        error: None,
+                    })?;
                     sent_snapshot = true;
                     if terminal {
                         return Ok(());
@@ -627,15 +675,6 @@ fn parse_passwd(content: &str) -> impl Iterator<Item = PasswdEntry> + '_ {
     })
 }
 
-/// Resolve a uid to a username via `/etc/passwd`.
-fn username_for_uid(uid: u32) -> Option<String> {
-    let content = std::fs::read_to_string("/etc/passwd").ok()?;
-    let found = parse_passwd(&content)
-        .find(|e| e.uid == uid)
-        .map(|e| e.name);
-    found
-}
-
 /// Resolve a login name's primary gid via `/etc/passwd`.
 fn primary_gid_for_user(name: &str) -> Option<u32> {
     let content = std::fs::read_to_string("/etc/passwd").ok()?;
@@ -798,5 +837,19 @@ bigfred:x:1000:1001:BigFred loco-server:/home/bigfred:/bin/false
             ..Config::default()
         };
         assert_eq!(cfg.socket_group_owner(), None);
+    }
+
+    #[test]
+    fn error_frame_is_a_readable_response() {
+        let (mut a, mut b) = std::os::unix::net::UnixStream::pair().unwrap();
+        wp_proto::write_frame(
+            &mut a,
+            &err_response(RequestKind::Hello, "unknown_type", "unknown type `nope`"),
+        )
+        .unwrap();
+        let resp: Response = wp_proto::read_frame(&mut b).unwrap();
+        let err = resp.error.expect("error body");
+        assert_eq!(err.code, "unknown_type");
+        assert!(err.message.contains("nope"));
     }
 }

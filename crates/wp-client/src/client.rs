@@ -50,19 +50,11 @@ impl Client {
 
     /// Resolve the daemon socket path from the environment.
     pub fn resolve_socket() -> PathBuf {
-        if let Ok(d) = std::env::var("BIGFRED_DATA_DIR") {
-            return PathBuf::from(d)
-                .join("run")
-                .join("wireless-programmer")
-                .join("wireless-programmer.sock");
-        }
-        if let Ok(d) = std::env::var("DATA_DIR") {
-            return PathBuf::from(d)
-                .join("run")
-                .join("wireless-programmer")
-                .join("wireless-programmer.sock");
-        }
-        PathBuf::from(DEFAULT_SOCKET)
+        bigfred_shared_daemon::DataDir::resolve(
+            bigfred_shared_daemon::EnvPolicy::BigfredThenDataDir,
+            bigfred_shared_daemon::PathRule::AcceptAny,
+        )
+        .run_nested_socket("wireless-programmer")
     }
 
     fn connect(&self) -> Result<UnixStream, ClientError> {
