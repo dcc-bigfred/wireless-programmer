@@ -11,7 +11,7 @@ use super::{init_tracing, LogLevel};
 /// `fake` arguments — runs only the Soft-AP HTTP mock (no daemon / radio / IPC).
 #[derive(Debug, Parser)]
 pub struct FakeArgs {
-    /// Driver to emulate (`wifred` | `longfred`).
+    /// Driver to emulate (`wifred` | `longfred` | `rb23xx`).
     #[arg(long)]
     pub driver: String,
 
@@ -38,8 +38,9 @@ pub fn run_fake(args: FakeArgs) -> ExitCode {
     let device: Arc<tokio::sync::Mutex<dyn wp_fake::FakeDevice>> = match args.driver.as_str() {
         "wifred" => Arc::new(tokio::sync::Mutex::new(wp_fake::WifredFake::new())),
         "longfred" => Arc::new(tokio::sync::Mutex::new(wp_fake::LongFredFake::new())),
+        "rb23xx" => Arc::new(tokio::sync::Mutex::new(wp_fake::Rb23xxFake::new())),
         other => {
-            tracing::error!("unknown driver {other:?}; expected wifred or longfred");
+            tracing::error!("unknown driver {other:?}; expected wifred, longfred, or rb23xx");
             return ExitCode::FAILURE;
         }
     };

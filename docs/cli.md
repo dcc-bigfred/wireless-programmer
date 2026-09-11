@@ -36,13 +36,13 @@ Options:
 
 ### `daemon --interface fake`
 
-Runs the full IPC daemon with `FakeRadio` (scan returns one WiFred and one
-LongFred candidate) and an in-process Soft-AP HTTP mock on
+Runs the full IPC daemon with `FakeRadio` (scan returns one WiFred, one
+LongFred, and one RB23xx candidate) and an in-process Soft-AP HTTP mock on
 `127.0.0.1:<port>` (default port 8070; override with
 `--fake-webserver-port` / `WIRELESS_PROGRAMMER_FAKE_WEB_PORT`). Peer auth is
 forced off. Useful for developing `bigfred-wizard` without WiFi hardware.
 
-### `fake --driver wifred|longfred`
+### `fake --driver wifred|longfred|rb23xx`
 
 Starts **only** the Soft-AP HTTP mock for the chosen driver (no radio, no
 IPC). Default bind `127.0.0.1:8070`.
@@ -137,7 +137,8 @@ wireless-programmer scan --json | jq '.[] | select(.rssi != null) | .key'
 
 Human `scan` prints `no candidates found` when the daemon returned an empty
 list. That is success, not `scan_failed`: the radio scan ran, but no SSID
-started with `longfred_prog` or `wiFred-config`. Soft-AP discovery uses an
+started with `longfred_prog`, `wiFred-config`, or `RB2300_` / `RB2310_` /
+`RB2302_`. Soft-AP discovery uses an
 **active** nl80211 scan (wildcard probe, like `iw scan`), brings `wlan0` up,
 and waits for `NEW_SCAN_RESULTS`. `--log-level debug` on the **daemon** logs
 every raw BSS; at `info`, a scan that saw APs but no matching prefix says so
@@ -147,17 +148,25 @@ daemon with it.
 
 ## Firmware update
 
-`update-firmware` uploads a LongFred image. Soft-AP and LAN POST
-`.app.bin` to `POST /api/v1/firmware` (120 s, not retried). USB runs
-`espflash` on a serial port (ELF, merged `.bin`, or `.app.bin`). WiFred
-does not support firmware upload.
+`update-firmware` uploads a device image. Soft-AP HTTP has a 120 s deadline
+and is not retried.
 
-Use `--mode ap` after putting the throttle into Soft-AP programming mode
-(8-second chord). Use `--mode lan` when the throttle is already on the
-layout Wi‑Fi and the operator has opened **Firmware update** in the Extras
-menu (HTTP is enabled only while that screen is shown). Use `--mode usb`
-with the throttle on a USB-UART (or native USB-Serial-JTAG) cable;
-`espflash` must be on `PATH`.
+LongFred: Soft-AP and LAN POST `.app.bin` to `POST /api/v1/firmware`. USB
+runs `espflash` on a serial port (ELF, merged `.bin`, or `.app.bin`).
+
+RB23xx: Soft-AP only. POST the vendor `.bin` to
+`POST /upload?p=/{basename}` (`multipart/form-data`, raw body, max 5 MiB).
+A TCP close/RST after the write is success (decoder reboot). Enable F28 on
+the locomotive first, then join `RB2300_XXXXX`.
+
+WiFred does not support firmware upload.
+
+Use `--mode ap` after putting a LongFred throttle into Soft-AP programming
+mode (8-second chord), or after F28 on an RB23xx decoder. Use `--mode lan`
+when a LongFred is already on the layout Wi‑Fi and the operator has opened
+**Firmware update** in the Extras menu (HTTP is enabled only while that
+screen is shown). Use `--mode usb` with a LongFred on a USB-UART (or native
+USB-Serial-JTAG) cable; `espflash` must be on `PATH`.
 
 ```bash
 # Soft-AP: join longfred_prog_*, POST the image, keep programming_mode.
@@ -176,6 +185,10 @@ wireless-programmer update-firmware --mode usb --port /dev/ttyUSB0 \
   --file longfred-markwtech-esp32c6.elf --partition-table partitions.csv
 wireless-programmer update-firmware --mode usb --port /dev/ttyACM0 \
   --file longfred-markwtech-esp32c6.bin
+
+# RB23xx decoder Soft-AP (F28 on; SSID RB2300_*).
+wireless-programmer update-firmware --mode ap --driver rb23xx \
+  --key AA:BB:CC:DD:EE:03 --file RB_Sound_1.15.1.bin
 ```
 
 Like `program`, the command watches the job by default; `--no-watch`

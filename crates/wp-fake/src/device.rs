@@ -18,6 +18,8 @@ pub struct FakeResponse {
     pub content_type: &'static str,
     /// Response body bytes.
     pub body: Vec<u8>,
+    /// Close the socket without writing a reply (decoder reboot after POST).
+    pub drop_without_reply: bool,
 }
 
 /// Build a `200` text/plain response.
@@ -27,6 +29,7 @@ pub fn ok_text(body: impl Into<String>) -> FakeResponse {
         status: 200,
         content_type: "text/plain",
         body: body.into().into_bytes(),
+        drop_without_reply: false,
     }
 }
 
@@ -37,6 +40,7 @@ pub fn ok_xml(body: impl Into<Vec<u8>>) -> FakeResponse {
         status: 200,
         content_type: "text/html",
         body: body.into(),
+        drop_without_reply: false,
     }
 }
 
@@ -47,6 +51,7 @@ pub fn ok_json(body: impl Into<Vec<u8>>) -> FakeResponse {
         status: 200,
         content_type: "application/json",
         body: body.into(),
+        drop_without_reply: false,
     }
 }
 
@@ -57,6 +62,18 @@ pub fn not_found() -> FakeResponse {
         status: 404,
         content_type: "text/plain",
         body: b"not found".to_vec(),
+        drop_without_reply: false,
+    }
+}
+
+/// Close after reading the request, with no HTTP response.
+#[must_use]
+pub fn drop_without_reply() -> FakeResponse {
+    FakeResponse {
+        status: 200,
+        content_type: "text/plain",
+        body: Vec::new(),
+        drop_without_reply: true,
     }
 }
 

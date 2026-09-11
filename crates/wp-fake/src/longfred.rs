@@ -111,6 +111,7 @@ impl FakeDevice for LongFredFake {
                         status: 400,
                         content_type: "text/plain",
                         body: b"bad json".to_vec(),
+                        drop_without_reply: false,
                     },
                 }
             }
@@ -128,6 +129,7 @@ impl FakeDevice for LongFredFake {
                         status: 400,
                         content_type: "text/plain",
                         body: b"empty image".to_vec(),
+                        drop_without_reply: false,
                     }
                 } else {
                     ok_json(b"{\"ok\":true}".to_vec())

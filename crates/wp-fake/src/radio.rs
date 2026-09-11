@@ -39,6 +39,11 @@ impl FakeRadio {
                 bssid: Some("de:ad:be:ef:00:02".into()),
                 rssi: Some(-42),
             },
+            ScanResult {
+                ssid: Some("RB2300_deadbe".into()),
+                bssid: Some("de:ad:be:ef:00:03".into()),
+                rssi: Some(-42),
+            },
         ])
     }
 
@@ -61,6 +66,16 @@ impl Radio for FakeRadio {
 
     fn connect_open(&mut self, _ssid: &str, _bssid: Option<[u8; 6]>) -> RadioFut<'_, ()> {
         self.record("connect_open");
+        Box::pin(async move { Ok(()) })
+    }
+
+    fn connect_psk(
+        &mut self,
+        _ssid: &str,
+        _bssid: Option<[u8; 6]>,
+        _psk: &str,
+    ) -> RadioFut<'_, ()> {
+        self.record("connect_psk");
         Box::pin(async move { Ok(()) })
     }
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RB23xx driver** — Soft-AP discovery (`RB2300_*` / `RB2310_*` / `RB2302_*`),
+  WPA2-PSK join (factory password, never logged), and firmware `.bin` upload
+  via `POST /upload?p=/{filename}` matching the `rb` CLI. Max 5 MiB, 120 s
+  deadline, no retries. A TCP reset after a full write is success (decoder
+  reboot). Soft-AP only.
+
 ### Changed
 
 - LongFred Soft-AP commissioning addresses are now `192.168.4.1` / source
