@@ -18,13 +18,13 @@ mod settings;
 
 use wp_core::{
     validate_common, CommissioningNet, DeviceCandidate, DeviceDriver, DriverCapabilities,
-    DriverError, DriverId, IdentityFormat, Observation, Outcome, ProgressSink, ScanFilters,
-    Transport,
+    DriverError, DriverId, FirmwareCapabilities, FirmwareModes, IdentityFormat, Observation,
+    Outcome, ProgressSink, ScanFilters, Transport,
 };
 
 pub use constants::{
     CONFIG_AP_PORT, CONFIG_HOST, CONFIG_PREFIX_LEN, CONFIG_SOURCE, FIRMWARE_CONTENT_TYPE,
-    FIRMWARE_PATH, MAX_FUNCTION, MAX_ROSTER_SLOTS, WIFI_CONFIG_SSID_PREFIX,
+    FIRMWARE_PATH, MAX_FIRMWARE_BYTES, MAX_FUNCTION, MAX_ROSTER_SLOTS, WIFI_CONFIG_SSID_PREFIX,
 };
 pub use discovery::identify;
 pub use settings::{build_settings_put, format_roster_addr, verify};
@@ -64,12 +64,19 @@ impl DeviceDriver for LongFredDriver {
             // callers can share a request shape with WiFred.
             supports_throttle_server: true,
             commissioning: wp_core::CommissioningKind::SoftAp,
-            supports_firmware_update: true,
             commissioning_net: Some(CommissioningNet {
                 host: CONFIG_HOST,
                 port: CONFIG_AP_PORT,
                 source: CONFIG_SOURCE,
                 prefix: CONFIG_PREFIX_LEN,
+            }),
+            softap_psk: None,
+            firmware: Some(FirmwareCapabilities {
+                max_bytes: MAX_FIRMWARE_BYTES,
+                max_bytes_label: "LongFred OTA slot (3.75 MiB)",
+                modes: FirmwareModes::AP_LAN_USB,
+                require_esp_app_bin: true,
+                success_on_reset_after_write: false,
             }),
         }
     }
@@ -132,18 +139,12 @@ impl DeviceDriver for LongFredDriver {
             mismatches: Vec::new(),
         })
     }
-}
 
-impl LongFredDriver {
-    /// Stream an ESP32-C6 app image to `POST /api/v1/firmware`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DriverError`] when the HTTP POST fails.
-    pub async fn update_firmware(
+    async fn update_firmware(
         &self,
         transport: Transport<'_>,
         image: &[u8],
+        _filename: &str,
         progress: &mut dyn ProgressSink,
     ) -> Result<Outcome, DriverError> {
         let client = http_client(transport)?;

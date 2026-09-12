@@ -57,10 +57,11 @@ impl DeviceDriver for WiFredDriver {
             identity_format: IdentityFormat::Digits { len: 6 },
             supports_throttle_server: true,
             commissioning: wp_core::CommissioningKind::SoftAp,
-            supports_firmware_update: false,
             // Historical Soft-AP defaults (`192.168.4.1` / `.2/24`) live in the
             // daemon config; leave unset so existing behaviour is unchanged.
             commissioning_net: None,
+            softap_psk: None,
+            firmware: None,
         }
     }
 
@@ -192,6 +193,18 @@ impl DeviceDriver for WiFredDriver {
             restarted: true,
             mismatches: Vec::new(),
         })
+    }
+
+    async fn update_firmware(
+        &self,
+        _transport: Transport<'_>,
+        _image: &[u8],
+        _filename: &str,
+        _progress: &mut dyn ProgressSink,
+    ) -> Result<Outcome, DriverError> {
+        Err(DriverError::Other(
+            "firmware update is not supported".into(),
+        ))
     }
 }
 

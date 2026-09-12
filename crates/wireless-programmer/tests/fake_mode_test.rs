@@ -5,11 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use wp_fake::{CompositeFakeDevice, FakeRadio, FakeZ21, FakeZ21Mode};
-use wp_proto::{ProgramRequestWire, RosterEntryWire, ThrottleServerWire, WifiCredentialsWire};
+use wp_proto::{
+    ProgramRequestWire, ReachMode, RosterEntryWire, ThrottleServerWire, WifiCredentialsWire,
+};
 
 use wireless_programmer::config::Config;
 use wireless_programmer::drivers::{Driver, DriverRegistry};
-use wireless_programmer::jobs::{JobRegistry, JobState};
+use wireless_programmer::jobs::{FirmwareJob, JobRegistry, JobState};
 use wireless_programmer::runtime::Runtime;
 
 fn temp_socket() -> std::path::PathBuf {
@@ -144,9 +146,10 @@ fn wait_terminal(rt: &Runtime, id: &wireless_programmer::jobs::JobId) -> JobStat
 fn fake_scan_returns_one_candidate_per_driver() {
     let rt = setup_runtime();
     let found = rt.scan().expect("scan");
-    assert_eq!(found.len(), 2);
+    assert_eq!(found.len(), 3);
     assert!(found.iter().any(|c| c.driver == "wifred"));
     assert!(found.iter().any(|c| c.driver == "longfred"));
+    assert!(found.iter().any(|c| c.driver == "rb23xx"));
 }
 
 #[test]
@@ -273,5 +276,130 @@ fn fake_program_fred_no_ack_reaches_done() {
     assert_eq!(
         snap.as_ref().and_then(|s| s.detail.as_deref()),
         Some("noAck")
+    );
+}
+
+#[test]
+fn fake_probe_rb23xx() {
+    let rt = setup_runtime();
+    let found = rt.scan().expect("scan");
+    let c = found.iter().find(|c| c.driver == "rb23xx").expect("rb23xx");
+    let info = rt.probe(Driver::Rb23xx, &c.key).expect("probe");
+    assert_eq!(info.get("ok").and_then(|v| v.as_bool()), Some(true));
+}
+
+#[test]
+fn fake_update_firmware_rb23xx_reaches_done() {
+    let rt = setup_runtime();
+    let found = rt.scan().expect("scan");
+    let c = found.iter().find(|c| c.driver == "rb23xx").expect("rb23xx");
+    let path = std::env::temp_dir().join(format!(
+        "wp-rb23xx-fw-{}-{}.bin",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, b"rb-firmware-bytes").unwrap();
+    let id = rt
+        .submit_firmware(
+            Driver::Rb23xx,
+            &c.key,
+            FirmwareJob {
+                mode: ReachMode::Ap,
+                path: path.clone(),
+                host: None,
+                port: None,
+                partition_table: None,
+            },
+        )
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(
+        state,
+        JobState::Done,
+        "detail={:?}",
+        rt.jobs().snapshot(&id)
+    );
+}
+
+#[test]
+fn fake_update_firmware_rb23xx_rejects_oversize() {
+    let rt = setup_runtime();
+    let found = rt.scan().expect("scan");
+    let c = found.iter().find(|c| c.driver == "rb23xx").expect("rb23xx");
+    let path = std::env::temp_dir().join(format!(
+        "wp-rb23xx-big-{}-{}.bin",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let oversize = usize::try_from(wp_drivers::rb23xx::MAX_FIRMWARE_BYTES).unwrap() + 1;
+    std::fs::write(&path, vec![0u8; oversize]).unwrap();
+    let id = rt
+        .submit_firmware(
+            Driver::Rb23xx,
+            &c.key,
+            FirmwareJob {
+                mode: ReachMode::Ap,
+                path: path.clone(),
+                host: None,
+                port: None,
+                partition_table: None,
+            },
+        )
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(state, JobState::Failed, "detail={snap:?}");
+    assert!(
+        snap.as_ref()
+            .and_then(|s| s.detail.as_deref())
+            .is_some_and(|d| d.contains("5 MiB")),
+        "{snap:?}"
+    );
+}
+
+#[test]
+fn fake_update_firmware_rb23xx_rejects_lan() {
+    let rt = setup_runtime();
+    let found = rt.scan().expect("scan");
+    let c = found.iter().find(|c| c.driver == "rb23xx").expect("rb23xx");
+    let path = std::env::temp_dir().join(format!(
+        "wp-rb23xx-lan-{}-{}.bin",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&path, b"rb-firmware-bytes").unwrap();
+    let id = rt
+        .submit_firmware(
+            Driver::Rb23xx,
+            &c.key,
+            FirmwareJob {
+                mode: ReachMode::Lan,
+                path: path.clone(),
+                host: Some("192.168.4.1".into()),
+                port: None,
+                partition_table: None,
+            },
+        )
+        .expect("submit");
+    let state = wait_terminal(&rt, &id);
+    let snap = rt.jobs().snapshot(&id);
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(state, JobState::Failed, "detail={snap:?}");
+    assert!(
+        snap.as_ref()
+            .and_then(|s| s.detail.as_deref())
+            .is_some_and(|d| d.contains("Soft-AP")),
+        "{snap:?}"
     );
 }

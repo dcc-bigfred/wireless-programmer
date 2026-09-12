@@ -193,7 +193,7 @@ pub struct UpdateFirmwareArgs {
     /// CSV partition table for ELF USB flashes (default: `partitions.csv` next to `--file`).
     #[arg(long)]
     pub partition_table: Option<PathBuf>,
-    /// Path to a LongFred image (`.app.bin`, merged `.bin`, or ELF).
+    /// Path to a firmware image (LongFred `.app.bin` / ELF, or RB23xx `.bin`).
     #[arg(long)]
     pub file: PathBuf,
     /// Do not stream job progress after starting the job.

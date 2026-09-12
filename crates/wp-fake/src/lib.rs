@@ -6,14 +6,18 @@ mod composite;
 mod device;
 mod longfred;
 mod radio;
+mod rb23xx;
 mod server;
 mod wifred;
 mod z21;
 
 pub use composite::CompositeFakeDevice;
-pub use device::{not_found, ok_json, ok_text, ok_xml, FakeDevice, FakeRequest, FakeResponse};
+pub use device::{
+    drop_without_reply, not_found, ok_json, ok_text, ok_xml, FakeDevice, FakeRequest, FakeResponse,
+};
 pub use longfred::LongFredFake;
 pub use radio::FakeRadio;
+pub use rb23xx::Rb23xxFake;
 pub use server::{bind_and_serve, FakeHttpServer};
 pub use wifred::WifredFake;
 pub use z21::{FakeZ21, FakeZ21Mode};

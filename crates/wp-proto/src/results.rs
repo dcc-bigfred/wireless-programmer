@@ -74,6 +74,15 @@ pub struct CapabilitiesWire {
     /// Soft-AP addressing for commissioning, when not using daemon defaults.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub commissioning_net: Option<CommissioningNetWire>,
+    /// HTTP firmware image cap in bytes, when [`Self::supports_firmware_update`].
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub max_firmware_bytes: Option<u64>,
+    /// `updateFirmware` reach modes this driver accepts (`ap` / `lan` / `usb`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub firmware_modes: Vec<crate::ReachMode>,
+    /// HTTP images must be an ESP `.app.bin` (magic `0xE9`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub firmware_require_esp_app_bin: bool,
 }
 
 /// On-link Soft-AP addressing advertised by a driver.

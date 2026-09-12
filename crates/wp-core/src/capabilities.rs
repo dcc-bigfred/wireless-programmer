@@ -2,7 +2,9 @@
 
 use std::net::Ipv4Addr;
 
-use wp_proto::{CapabilitiesWire, CommissioningKindWire, CommissioningNetWire, IdentityFormatWire};
+use wp_proto::{
+    CapabilitiesWire, CommissioningKindWire, CommissioningNetWire, IdentityFormatWire, ReachMode,
+};
 
 /// Stable identifier for a driver implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -112,6 +114,100 @@ impl From<IdentityFormat> for IdentityFormatWire {
     }
 }
 
+/// Which `updateFirmware` reach paths a driver accepts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FirmwareModes {
+    /// Soft-AP HTTP upload.
+    pub ap: bool,
+    /// Layout LAN HTTP upload.
+    pub lan: bool,
+    /// USB serial (`espflash`).
+    pub usb: bool,
+}
+
+impl FirmwareModes {
+    /// Soft-AP only (e.g. RailBOX file-browser).
+    pub const AP: Self = Self {
+        ap: true,
+        lan: false,
+        usb: false,
+    };
+
+    /// Soft-AP, LAN HTTP OTA, and USB (e.g. LongFred).
+    pub const AP_LAN_USB: Self = Self {
+        ap: true,
+        lan: true,
+        usb: true,
+    };
+
+    /// Whether `mode` is an accepted firmware path. `Z21` is never a firmware
+    /// path; drivers that do not support a mode simply leave it `false`.
+    #[must_use]
+    pub fn allows(self, mode: ReachMode) -> bool {
+        match mode {
+            ReachMode::Ap => self.ap,
+            ReachMode::Lan => self.lan,
+            ReachMode::Usb => self.usb,
+            ReachMode::Z21 => false,
+        }
+    }
+
+    fn to_reach_modes(self) -> Vec<ReachMode> {
+        let mut modes = Vec::new();
+        if self.ap {
+            modes.push(ReachMode::Ap);
+        }
+        if self.lan {
+            modes.push(ReachMode::Lan);
+        }
+        if self.usb {
+            modes.push(ReachMode::Usb);
+        }
+        modes
+    }
+}
+
+/// Firmware-upload policy. Present when the driver supports `updateFirmware`.
+///
+/// Shared job code reads these fields instead of matching on a driver id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirmwareCapabilities {
+    /// Maximum image size loaded into RAM for HTTP upload.
+    pub max_bytes: u64,
+    /// Human-readable cap used in error strings (e.g. `"5 MiB"`).
+    pub max_bytes_label: &'static str,
+    /// Accepted `updateFirmware` reach paths.
+    pub modes: FirmwareModes,
+    /// HTTP images must be an ESP `.app.bin` (magic `0xE9`).
+    pub require_esp_app_bin: bool,
+    /// TCP RST/EOF after a full request write is success (device reboot).
+    pub success_on_reset_after_write: bool,
+}
+
+impl FirmwareCapabilities {
+    /// Whether `mode` is an accepted firmware path.
+    #[must_use]
+    pub fn allows(self, mode: ReachMode) -> bool {
+        self.modes.allows(mode)
+    }
+
+    /// Error detail when the image is larger than [`Self::max_bytes`].
+    #[must_use]
+    pub fn too_large_detail(self) -> String {
+        format!("firmware image exceeds {}", self.max_bytes_label)
+    }
+
+    /// Error detail when the requested reach path is not in [`Self::modes`].
+    #[must_use]
+    pub fn mode_rejected_detail(self) -> &'static str {
+        if self.modes == FirmwareModes::AP {
+            "firmware update is Soft-AP only"
+        } else {
+            "firmware update is not supported in this mode"
+        }
+    }
+}
+
 /// What a driver can do, advertised to callers via `hello`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DriverCapabilities {
@@ -125,11 +221,15 @@ pub struct DriverCapabilities {
     pub supports_throttle_server: bool,
     /// How the device is commissioned.
     pub commissioning: CommissioningKind,
-    /// Whether HTTP firmware upload is supported.
-    pub supports_firmware_update: bool,
     /// Soft-AP addressing for commissioning, when the driver does not use the
     /// daemon's historical `192.168.4.x` defaults.
     pub commissioning_net: Option<CommissioningNet>,
+    /// WPA2-PSK passphrase for the device Soft-AP, when it is not open.
+    /// These are publicly documented factory default passwords for a
+    /// temporary commissioning AP, not secrets.
+    pub softap_psk: Option<&'static str>,
+    /// Firmware-upload policy, when the driver supports `updateFirmware`.
+    pub firmware: Option<FirmwareCapabilities>,
 }
 
 impl From<DriverCapabilities> for CapabilitiesWire {
@@ -140,8 +240,14 @@ impl From<DriverCapabilities> for CapabilitiesWire {
             identity_format: c.identity_format.into(),
             supports_throttle_server: c.supports_throttle_server,
             commissioning: c.commissioning.into(),
-            supports_firmware_update: c.supports_firmware_update,
+            supports_firmware_update: c.firmware.is_some(),
             commissioning_net: c.commissioning_net.map(Into::into),
+            max_firmware_bytes: c.firmware.map(|f| f.max_bytes),
+            firmware_modes: c
+                .firmware
+                .map(|f| f.modes.to_reach_modes())
+                .unwrap_or_default(),
+            firmware_require_esp_app_bin: c.firmware.is_some_and(|f| f.require_esp_app_bin),
         }
     }
 }
@@ -174,5 +280,65 @@ mod tests {
         let fmt = IdentityFormat::Any;
         assert!(fmt.matches(""));
         assert!(fmt.matches("anything goes? no: still matches"));
+    }
+
+    fn firmware_caps() -> FirmwareCapabilities {
+        FirmwareCapabilities {
+            max_bytes: 5 * 1024 * 1024,
+            max_bytes_label: "5 MiB",
+            modes: FirmwareModes::AP,
+            require_esp_app_bin: false,
+            success_on_reset_after_write: true,
+        }
+    }
+
+    #[test]
+    fn firmware_modes_ap_only_rejects_lan_and_usb() {
+        use wp_proto::ReachMode;
+        let modes = FirmwareModes::AP;
+        assert!(modes.allows(ReachMode::Ap));
+        assert!(!modes.allows(ReachMode::Lan));
+        assert!(!modes.allows(ReachMode::Usb));
+        assert!(!modes.allows(ReachMode::Z21));
+    }
+
+    #[test]
+    fn firmware_caps_drive_error_details_and_hello_wire() {
+        let fw = firmware_caps();
+        assert_eq!(fw.too_large_detail(), "firmware image exceeds 5 MiB");
+        assert_eq!(fw.mode_rejected_detail(), "firmware update is Soft-AP only");
+
+        let wire = CapabilitiesWire::from(DriverCapabilities {
+            max_roster_slots: 0,
+            max_function_index: 0,
+            identity_format: IdentityFormat::Any,
+            supports_throttle_server: false,
+            commissioning: CommissioningKind::SoftAp,
+            commissioning_net: None,
+            softap_psk: Some("000000000"),
+            firmware: Some(fw),
+        });
+        assert!(wire.supports_firmware_update);
+        assert_eq!(wire.max_firmware_bytes, Some(fw.max_bytes));
+        assert_eq!(wire.firmware_modes, vec![ReachMode::Ap]);
+        assert!(!wire.firmware_require_esp_app_bin);
+    }
+
+    #[test]
+    fn hello_omits_firmware_policy_when_unsupported() {
+        let wire = CapabilitiesWire::from(DriverCapabilities {
+            max_roster_slots: 4,
+            max_function_index: 16,
+            identity_format: IdentityFormat::Digits { len: 6 },
+            supports_throttle_server: true,
+            commissioning: CommissioningKind::SoftAp,
+            commissioning_net: None,
+            softap_psk: None,
+            firmware: None,
+        });
+        assert!(!wire.supports_firmware_update);
+        assert_eq!(wire.max_firmware_bytes, None);
+        assert!(wire.firmware_modes.is_empty());
+        assert!(!wire.firmware_require_esp_app_bin);
     }
 }

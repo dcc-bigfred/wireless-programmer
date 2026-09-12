@@ -2,6 +2,7 @@
 
 use crate::device::{not_found, FakeDevice, FakeRequest, FakeResponse};
 use crate::longfred::LongFredFake;
+use crate::rb23xx::Rb23xxFake;
 use crate::wifred::WifredFake;
 
 /// Tries each inner device and returns the first non-404 response.
@@ -16,12 +17,13 @@ impl CompositeFakeDevice {
         Self { devices }
     }
 
-    /// WiFred + LongFred mocks.
+    /// WiFred + LongFred + RB23xx mocks.
     #[must_use]
     pub fn all() -> Self {
         Self::new(vec![
             Box::new(WifredFake::new()),
             Box::new(LongFredFake::new()),
+            Box::new(Rb23xxFake::new()),
         ])
     }
 }

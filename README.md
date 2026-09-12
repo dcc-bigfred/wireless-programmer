@@ -27,7 +27,7 @@ crates/
   wp-proto/            socket wire types + 4-byte-LE length+JSON framing
   wp-core/             DeviceDriver trait, capabilities, typed errors
   wp-link/             radio (nl80211/rtnetlink) + bounded HTTP client
-  wp-drivers/          wifred/, longfred/ — Soft-AP programming drivers
+  wp-drivers/          wifred/, longfred/, rb23xx/ — Soft-AP programming drivers
   wp-fake/             FakeRadio + Soft-AP HTTP mocks (dev / tests)
   wp-client/           Rust client SDK (mirrors go/client)
   wireless-programmer/ bin: socket server, job registry, dispatch + CLI
@@ -45,10 +45,12 @@ wireless-programmer daemon --interface fake --verbose
 # Standalone Soft-AP HTTP mock only (no IPC / radio)
 wireless-programmer fake --driver wifred --bind 127.0.0.1:8070
 wireless-programmer fake --driver longfred
+wireless-programmer fake --driver rb23xx
 ```
 
-With `--interface fake`, scan always returns one WiFred and one LongFred
-candidate; programming talks to an in-process HTTP mock on `127.0.0.1`.
+With `--interface fake`, scan always returns one WiFred, one LongFred, and
+one RB23xx candidate; programming talks to an in-process HTTP mock on
+`127.0.0.1`.
 
 ## Memory profile
 

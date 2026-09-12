@@ -179,7 +179,7 @@ impl Runtime {
         if out.is_empty() && !results.is_empty() {
             tracing::info!(
                 raw = results.len(),
-                "scan finished: radio saw APs, none matched longfred_prog / wiFred-config"
+                "scan finished: radio saw APs, none matched longfred_prog / wiFred-config / RB23xx"
             );
         }
         Ok(out)
@@ -422,7 +422,14 @@ impl Runtime {
         self.rt.handle().block_on(async move {
             let mut r = radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            if let Err(e) = r.connect_open(&candidate.ssid, bssid).await {
+            if let Err(e) = radio_join(
+                r.as_mut(),
+                &candidate.ssid,
+                bssid,
+                registry.capabilities(driver).softap_psk,
+            )
+            .await
+            {
                 tracing::warn!(
                     ssid = %candidate.ssid,
                     error = %e,
@@ -470,7 +477,13 @@ impl Runtime {
         self.rt.handle().block_on(async move {
             let mut r = radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            r.connect_open(&candidate.ssid, bssid).await?;
+            radio_join(
+                r.as_mut(),
+                &candidate.ssid,
+                bssid,
+                registry.capabilities(driver).softap_psk,
+            )
+            .await?;
             r.set_address(net.source, net.prefix).await?;
             r.link_up().await?;
             r.prepare_softap(net.source, net.host).await?;
@@ -497,6 +510,18 @@ fn observation_from_scan(s: &ScanResult) -> Observation {
         bssid: s.bssid.clone(),
         rssi: s.rssi,
         extra: serde_json::Value::Null,
+    }
+}
+
+async fn radio_join(
+    radio: &mut dyn Radio,
+    ssid: &str,
+    bssid: Option<[u8; 6]>,
+    psk: Option<&str>,
+) -> Result<(), wp_core::DriverError> {
+    match psk {
+        Some(psk) => radio.connect_psk(ssid, bssid, psk).await,
+        None => radio.connect_open(ssid, bssid).await,
     }
 }
 
@@ -941,7 +966,14 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         bssid = ?candidate.bssid,
         "connecting to Soft-AP"
     );
-    if let Err(e) = radio.connect_open(&candidate.ssid, bssid).await {
+    if let Err(e) = radio_join(
+        radio.as_mut(),
+        &candidate.ssid,
+        bssid,
+        rt.registry.capabilities(driver).softap_psk,
+    )
+    .await
+    {
         tracing::warn!(
             job_id = %id.0,
             ssid = %candidate.ssid,
@@ -1114,6 +1146,45 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         return;
     };
 
+    let Some(fw) = rt.registry.capabilities(driver).firmware else {
+        rt.jobs.transition(
+            &id,
+            JobState::Failed,
+            None,
+            None,
+            Some("firmware update is not supported"),
+        );
+        return;
+    };
+    if !fw.allows(job.mode) {
+        rt.jobs.transition(
+            &id,
+            JobState::Failed,
+            None,
+            None,
+            Some(fw.mode_rejected_detail()),
+        );
+        return;
+    }
+
+    if job.mode != ReachMode::Usb {
+        if let Ok(meta) = std::fs::metadata(&job.path) {
+            if meta.len() > fw.max_bytes {
+                let detail = fw.too_large_detail();
+                rt.jobs
+                    .transition(&id, JobState::Failed, None, None, Some(&detail));
+                return;
+            }
+        }
+    }
+
+    let filename = job
+        .path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("firmware.bin")
+        .to_string();
+
     let image = if job.mode == ReachMode::Usb {
         Vec::new()
     } else {
@@ -1143,33 +1214,33 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
     };
 
     if job.mode != ReachMode::Usb {
-        if image.len() as u64 > crate::jobs::MAX_FIRMWARE_BYTES {
-            rt.jobs.transition(
-                &id,
-                JobState::Failed,
-                None,
-                None,
-                Some("firmware image exceeds LongFred OTA slot (3.75 MiB)"),
-            );
+        if image.len() as u64 > fw.max_bytes {
+            let detail = fw.too_large_detail();
+            rt.jobs
+                .transition(&id, JobState::Failed, None, None, Some(&detail));
             return;
         }
-        let header_n = image.len().min(16);
-        match wp_link::classify_image(&job.path, &image[..header_n], image.len() as u64) {
-            Ok(wp_link::ImageKind::AppBin { .. }) => {}
-            Ok(_) => {
-                rt.jobs.transition(
-                    &id,
-                    JobState::Failed,
-                    None,
-                    None,
-                    Some("HTTP firmware needs a .app.bin ESP app image, not ELF or a merged dump"),
-                );
-                return;
-            }
-            Err(e) => {
-                rt.jobs
-                    .transition(&id, JobState::Failed, None, None, Some(&e));
-                return;
+        if fw.require_esp_app_bin {
+            let header_n = image.len().min(16);
+            match wp_link::classify_image(&job.path, &image[..header_n], image.len() as u64) {
+                Ok(wp_link::ImageKind::AppBin { .. }) => {}
+                Ok(_) => {
+                    rt.jobs.transition(
+                        &id,
+                        JobState::Failed,
+                        None,
+                        None,
+                        Some(
+                            "HTTP firmware needs a .app.bin ESP app image, not ELF or a merged dump",
+                        ),
+                    );
+                    return;
+                }
+                Err(e) => {
+                    rt.jobs
+                        .transition(&id, JobState::Failed, None, None, Some(&e));
+                    return;
+                }
             }
         }
     }
@@ -1259,6 +1330,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 &mut sink,
                 driver,
                 image,
+                filename.clone(),
                 &host,
                 80,
                 None,
@@ -1297,7 +1369,14 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             let _hold = RadioHold::new(rt);
             let mut radio = rt.radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            if let Err(e) = radio.connect_open(&candidate.ssid, bssid).await {
+            if let Err(e) = radio_join(
+                radio.as_mut(),
+                &candidate.ssid,
+                bssid,
+                rt.registry.capabilities(driver).softap_psk,
+            )
+            .await
+            {
                 rt.jobs.transition(
                     &id,
                     JobState::Failed,
@@ -1352,6 +1431,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
                 &mut sink,
                 driver,
                 image,
+                filename,
                 &net.host.to_string(),
                 net.port,
                 Some(SocketAddr::from((net.source, 0))),
@@ -1377,6 +1457,7 @@ async fn firmware_http_with_heartbeats(
     sink: &mut JobProgressSink<'_>,
     driver: Driver,
     image: Vec<u8>,
+    filename: String,
     host: &str,
     port: u16,
     source: Option<SocketAddr>,
@@ -1385,18 +1466,24 @@ async fn firmware_http_with_heartbeats(
 ) -> Result<wp_core::Outcome, wp_core::DriverError> {
     let tokio_h = rt.handle();
     let registry = Arc::clone(&rt.registry);
+    let reset_ok = rt
+        .registry
+        .capabilities(driver)
+        .firmware
+        .is_some_and(|fw| fw.success_on_reset_after_write);
     let client = make_firmware_http_client(
         host,
         port,
         source,
         device.as_deref(),
         Some(Arc::clone(&cancel)),
+        reset_ok,
     );
     await_blocking_with_heartbeats(rt, id, sink, "firmware http", cancel, move |_cancel| {
         let mut client = client;
         let mut nop = wp_core::NoProgress;
         let transport = Transport::Http(&mut client);
-        tokio_h.block_on(registry.update_firmware(driver, transport, &image, &mut nop))
+        tokio_h.block_on(registry.update_firmware(driver, transport, &image, &filename, &mut nop))
     })
     .await
 }
@@ -1477,10 +1564,12 @@ fn make_firmware_http_client(
     source: Option<SocketAddr>,
     device: Option<&str>,
     cancel: Option<Arc<AtomicBool>>,
+    success_on_reset_after_write: bool,
 ) -> BoundedHttpClient {
     let mut c = BoundedHttpClient::new(host, port)
         .with_deadline(crate::jobs::FIRMWARE_DEADLINE)
-        .with_retries(0);
+        .with_retries(0)
+        .with_success_on_reset_after_write(success_on_reset_after_write);
     if let Some(src) = source {
         c = c.with_source(src);
     }

@@ -43,7 +43,10 @@ the response so callers can correlate requests without an explicit id.
 Returns the daemon version and the list of registered drivers with their
 capabilities (max roster slots, max function index, identity format,
 commissioning kind, optional Soft-AP `commissioningNet`, throttle-server
-support, firmware-update support).
+support, firmware-update support). When `supportsFirmwareUpdate` is true,
+`hello` also includes `maxFirmwareBytes`, `firmwareModes` (`ap` / `lan` /
+`usb`), and `firmwareRequireEspAppBin`. The daemon uses those fields instead
+of per-driver branches in shared job code.
 
 `version` is the release tag from the ELF section `.wireless-programmer.version`
 when the binary was published via the release workflow; otherwise the Cargo
@@ -59,6 +62,7 @@ Soft-AP (`ap`) triggers an **active** nl80211 scan (wildcard probe, like
 
 - WiFred: every AP whose SSID starts with `wiFred-config`
 - LongFred: every AP whose SSID starts with `longfred_prog`
+- RB23xx: every AP whose SSID starts with `RB2300_`, `RB2310_`, or `RB2302_`
 
 LAN (`lan`) does not use the radio. It queries mDNS for
 `_longfred-ota._tcp.local` and returns LongFred candidates whose `key` is
@@ -82,12 +86,14 @@ A prior `scan` is not required when `candidate.key` is `host:port`.
 Starts a firmware-upload job. The image path is on the hub filesystem.
 `mode` is `"ap"`, `"lan"`, or `"usb"`.
 
-- **AP**: join the LongFred Soft-AP like `program`, then
-  `POST /api/v1/firmware` with `application/octet-stream` (`.app.bin` only).
-  The HTTP transfer has a 120 s deadline and is not retried. After a successful
-  reboot the device stays in programming mode.
+- **AP**: join the device Soft-AP like `program`, then POST the image.
+  LongFred: `POST /api/v1/firmware` with `application/octet-stream` (`.app.bin` only).
+  After a successful reboot the device stays in programming mode.
+  RB23xx: `POST /upload?p=/{basename}` with `multipart/form-data` and a raw
+  `.bin` body (max 5 MiB). A TCP reset after the write is success (decoder
+  reboot). RB23xx is Soft-AP only.
 - **LAN**: no radio. HTTP to `candidate.key` (an IPv4 from `scan` with
-  `mode: "lan"`) or `params.host`. The throttle must have HTTP OTA
+  `mode: "lan"`) or `params.host`. LongFred only. The throttle must have HTTP OTA
   enabled from the Firmware update menu. After reboot it rejoins layout
   Wi‑Fi.
 - **USB**: no radio. Runs `espflash` against `params.port` or
@@ -100,7 +106,8 @@ Starts a firmware-upload job. The image path is on the hub filesystem.
 
 A driver with `supportsFirmwareUpdate: false` (WiFred) returns
 `driverError`. A second job while another job is active returns `busy`
-(LAN and USB jobs do not take the radio).
+(LAN and USB jobs do not take the radio). The HTTP transfer has a 120 s
+deadline and is not retried.
 
 ```jsonc
 {
@@ -113,11 +120,23 @@ A driver with `supportsFirmwareUpdate: false` (WiFred) returns
 }
 ```
 
+```jsonc
+{
+  "type": "updateFirmware",
+  "params": {
+    "mode": "ap",
+    "candidate": { "driver": "rb23xx", "key": "AA:BB:CC:DD:EE:01" },
+    "path": "/data/firmware/RB_Sound_1.15.1.bin"
+  }
+}
+```
+
 ### `probe`
 
 Reads a single candidate's device info over the radio (associate → HTTP GET
 → parse → release). For WiFred this is `/api/getConfigXML`; for LongFred it
-is `/api/v1/settings` (JSON, including `device.variant` when present).
+is `/api/v1/settings` (JSON, including `device.variant` when present). For
+RB23xx this is `GET /?p=/` (file browser listing).
 
 ### `program`
 
@@ -147,8 +166,9 @@ request body is supplied by the caller (`bigfred`/`bigfred-wizard`), keeping
 ```
 
 See [`drivers/wifred.md`](drivers/wifred.md),
-[`drivers/longfred.md`](drivers/longfred.md), and
-[`drivers/fred.md`](drivers/fred.md) for per-driver write sequences.
+[`drivers/longfred.md`](drivers/longfred.md),
+[`drivers/fred.md`](drivers/fred.md), and
+[`drivers/rb23xx.md`](drivers/rb23xx.md) for per-driver write sequences.
 
 The job runs through the state machine: `queued → joining → probing →
 writing → verifying → restarting → done`. Progress is observable via

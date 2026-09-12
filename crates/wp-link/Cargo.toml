@@ -27,6 +27,8 @@ wl-nl80211 = { version = "0.5", default-features = false, features = ["tokio_soc
 rtnetlink = "0.21"
 tokio = { version = "1", features = ["net", "time", "io-util", "rt"] }
 futures = "0.3"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread"] }

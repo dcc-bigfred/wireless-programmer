@@ -7,8 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **RB23xx driver** — Soft-AP discovery (`RB2300_*` / `RB2310_*` / `RB2302_*`),
+  WPA2-PSK join (factory password, never logged), and firmware `.bin` upload
+  via `POST /upload?p=/{filename}` matching the `rb` CLI. Max 5 MiB, 120 s
+  deadline, no retries. A TCP reset after a full write is success (decoder
+  reboot). Soft-AP only.
+
 ### Changed
 
+- Firmware job limits (max bytes, allowed reach modes, ESP `.app.bin`
+  requirement, RST-after-write) and Soft-AP PSK come from driver
+  `capabilities` instead of per-driver branches in shared runtime code.
+- `update_firmware` is now a `DeviceDriver` trait method (uniform
+  `filename` parameter); the registry no longer manually dispatches with
+  per-driver signatures.
+- WPA2-PSK join falls back to `wpa_supplicant` on the programming
+  interface when nl80211 CONNECT with a PMK does not produce carrier
+  (brcmfmac on Pi 5 does not offload the 4-way handshake). The supplicant
+  is killed on radio release.
 - LongFred Soft-AP commissioning addresses are now `192.168.4.1` / source
   `192.168.4.2` (ESP-IDF default, same as WiFred). This no longer overlaps
   the BigFred hub LAN (`192.168.0.0/24`). Requires matching LongFred

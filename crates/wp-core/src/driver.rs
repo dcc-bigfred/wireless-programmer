@@ -94,6 +94,10 @@ pub trait DeviceDriver {
     fn name(&self) -> &'static str;
 
     /// Capabilities advertised via `hello`.
+    ///
+    /// Firmware limits and allowed `updateFirmware` modes live on
+    /// [`DriverCapabilities::firmware`]; shared job code must read those
+    /// fields instead of matching on a driver id.
     fn capabilities(&self) -> DriverCapabilities;
 
     /// Filters applied to raw scan observations.
@@ -129,6 +133,26 @@ pub trait DeviceDriver {
         &self,
         transport: Transport<'_>,
         req: &ProgramRequest<'_>,
+        progress: &mut dyn ProgressSink,
+    ) -> impl std::future::Future<Output = Result<Outcome, crate::DriverError>>;
+
+    /// Upload firmware over the supplied transport.
+    ///
+    /// `filename` is the basename the device stores the image under; drivers
+    /// that ignore the name (e.g. LongFred posts to a fixed path) simply
+    /// disregard it. Drivers without firmware support return
+    /// [`crate::DriverError::Other`]; the runtime checks
+    /// [`DriverCapabilities::firmware`] before dispatch so the error arm
+    /// is only reached if the trait is called directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::DriverError`] on runtime failure.
+    fn update_firmware(
+        &self,
+        transport: Transport<'_>,
+        image: &[u8],
+        filename: &str,
         progress: &mut dyn ProgressSink,
     ) -> impl std::future::Future<Output = Result<Outcome, crate::DriverError>>;
 }

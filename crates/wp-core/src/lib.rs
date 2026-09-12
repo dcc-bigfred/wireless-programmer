@@ -18,7 +18,8 @@ mod request;
 mod transport;
 
 pub use capabilities::{
-    CommissioningKind, CommissioningNet, DriverCapabilities, DriverId, IdentityFormat,
+    CommissioningKind, CommissioningNet, DriverCapabilities, DriverId, FirmwareCapabilities,
+    FirmwareModes, IdentityFormat,
 };
 pub use driver::{
     validate_common, DeviceCandidate, DeviceDriver, NoProgress, Observation, Outcome, ProgressSink,

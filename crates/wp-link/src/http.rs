@@ -61,6 +61,9 @@ pub struct BoundedHttpClient {
     max_body: usize,
     /// When set, long reads/writes abort with [`io::ErrorKind::Interrupted`].
     cancel: Option<Arc<AtomicBool>>,
+    /// After the request body is fully written, a TCP RST / FIN without a
+    /// complete HTTP response is treated as success (device reboot).
+    success_on_reset_after_write: bool,
 }
 
 impl BoundedHttpClient {
@@ -77,6 +80,7 @@ impl BoundedHttpClient {
             retry_delay: RETRY_DELAY,
             max_body: MAX_BODY_BYTES,
             cancel: None,
+            success_on_reset_after_write: false,
         }
     }
 
@@ -117,6 +121,15 @@ impl BoundedHttpClient {
     /// Abort in-flight I/O when `cancel` becomes true (firmware POST).
     pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
         self.cancel = Some(cancel);
+        self
+    }
+
+    /// Treat a TCP RST or close after a fully written request body as success.
+    ///
+    /// RailBOX reboots as soon as a firmware `.bin` is stored, so the HTTP
+    /// response never arrives. A RST **during** the write is still a failure.
+    pub fn with_success_on_reset_after_write(mut self, enable: bool) -> Self {
+        self.success_on_reset_after_write = enable;
         self
     }
 
@@ -218,7 +231,19 @@ impl BoundedHttpClient {
             };
             stream.set_read_timeout(Some(slice))?;
             match stream.read(&mut chunk) {
-                Ok(0) => break,
+                Ok(0) => {
+                    if http_message_complete(&buf) {
+                        break;
+                    }
+                    if self.success_on_reset_after_write {
+                        log::debug!(
+                            "read EOF after {} bytes with no complete HTTP response; treating as reboot",
+                            buf.len()
+                        );
+                        return Ok(Vec::new());
+                    }
+                    break;
+                }
                 Ok(n) => buf.extend_from_slice(&chunk[..n]),
                 Err(e)
                     if matches!(
@@ -242,7 +267,14 @@ impl BoundedHttpClient {
                         "read deadline elapsed",
                     ));
                 }
-                Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        io::ErrorKind::ConnectionReset
+                            | io::ErrorKind::ConnectionAborted
+                            | io::ErrorKind::UnexpectedEof
+                    ) =>
+                {
                     // LongFred (embassy-net) calls abort() after the response,
                     // which is a TCP RST. Linux then errors the next read even
                     // when the full HTTP message is already in `buf`.
@@ -253,6 +285,13 @@ impl BoundedHttpClient {
                     );
                     if http_message_complete(&buf) {
                         break;
+                    }
+                    if self.success_on_reset_after_write {
+                        log::debug!(
+                            "incomplete HTTP after write treated as reboot ({})",
+                            e.kind()
+                        );
+                        return Ok(Vec::new());
                     }
                     return Err(io::Error::new(e.kind(), format!("read: {e}")));
                 }
@@ -749,6 +788,67 @@ mod tests {
             .request("POST", "/", Some(("application/octet-stream", &body)))
             .expect_err("cancel");
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        let _ = server.join();
+    }
+
+    #[test]
+    fn request_treats_close_after_write_as_success_when_flagged() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf);
+            // Close without an HTTP response — decoder reboot after the POST.
+            drop(s);
+        });
+        let mut c = BoundedHttpClient::new(addr.ip().to_string(), addr.port())
+            .with_deadline(Duration::from_secs(5))
+            .with_retries(0)
+            .with_success_on_reset_after_write(true);
+        let body = b"firmware-bytes";
+        let got = c
+            .request(
+                "POST",
+                "/upload?p=/fw.bin",
+                Some(("multipart/form-data", body)),
+            )
+            .expect("reboot close is success");
+        assert!(got.is_empty());
+        let _ = server.join();
+    }
+
+    #[test]
+    fn request_still_fails_on_close_after_write_without_flag() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 512];
+            let _ = s.read(&mut buf);
+            drop(s);
+        });
+        let mut c = BoundedHttpClient::new(addr.ip().to_string(), addr.port())
+            .with_deadline(Duration::from_secs(5))
+            .with_retries(0);
+        let body = b"firmware-bytes";
+        let err = c
+            .request(
+                "POST",
+                "/upload?p=/fw.bin",
+                Some(("multipart/form-data", body)),
+            )
+            .expect_err("incomplete response");
+        assert!(
+            matches!(
+                err.kind(),
+                io::ErrorKind::UnexpectedEof
+                    | io::ErrorKind::ConnectionReset
+                    | io::ErrorKind::ConnectionAborted
+                    | io::ErrorKind::InvalidData
+            ),
+            "{err:?}"
+        );
         let _ = server.join();
     }
 

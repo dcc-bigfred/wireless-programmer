@@ -1,14 +1,16 @@
 //! Radio control: nl80211 scan/connect + rtnetlink addressing.
 //!
-//! The daemon owns the radio. It associates to a device AP (open, no PSK),
-//! assigns an on-link address with **no default route** (so the hub's
-//! Ethernet default gateway is never hijacked), then hands a sync
-//! [`wp_core::HttpClient`] to the driver. On every exit path the radio is
-//! released: disconnect and address removal.
+//! The daemon owns the radio. It associates to a device AP (open, or
+//! WPA2-PSK when the driver supplies a passphrase), assigns an on-link
+//! address with **no default route** (so the hub's Ethernet default gateway
+//! is never hijacked), then hands a sync [`wp_core::HttpClient`] to the
+//! driver. On every exit path the radio is released: disconnect and address
+//! removal.
 
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use wp_core::DriverError;
 
@@ -48,6 +50,9 @@ pub trait Radio: Send {
 
     /// Associate to an open AP identified by SSID (and optional BSSID hint).
     fn connect_open(&mut self, ssid: &str, bssid: Option<[u8; 6]>) -> RadioFut<'_, ()>;
+
+    /// Associate to a WPA2-PSK AP. The passphrase is never logged.
+    fn connect_psk(&mut self, ssid: &str, bssid: Option<[u8; 6]>, psk: &str) -> RadioFut<'_, ()>;
 
     /// Assign `addr/prefix_len` to the wireless interface (on-link route only).
     fn set_address(&mut self, addr: std::net::Ipv4Addr, prefix_len: u8) -> RadioFut<'_, ()>;
@@ -243,6 +248,10 @@ pub struct Nl80211Radio {
     /// Fib-rule exception installed by [`Radio::prepare_softap`], removed on
     /// [`Radio::release`].
     policy: Option<crate::netcfg::PolicyRoute>,
+    /// `wpa_supplicant` child spawned as a fallback when nl80211 CONNECT
+    /// with a PMK does not produce carrier (e.g. brcmfmac on Pi 5 does not
+    /// offload the 4-way handshake). Killed on [`Radio::release`].
+    supplicant: Arc<std::sync::Mutex<Option<std::process::Child>>>,
 }
 
 /// Hard cap on waiting for `NEW_SCAN_RESULTS` after TRIGGER_SCAN.
@@ -333,28 +342,227 @@ async fn wait_associated(iface: &str, deadline: std::time::Duration) -> bool {
     }
 }
 
-/// Issue one NL80211_CMD_CONNECT for an open (no PSK) AP.
+/// IEEE 802.11 WPA2-PSK: PBKDF2-HMAC-SHA1, 4096 rounds, 32-byte PMK.
 ///
-/// Errors from the command are surfaced rather than drained: a rejected
-/// CONNECT used to look like a successful association and only showed up
-/// later as an HTTP failure.
+/// The passphrase is not logged; callers pass it only into nl80211.
+#[must_use]
+pub fn wpa2_pmk(ssid: &str, passphrase: &str) -> [u8; 32] {
+    let mut pmk = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(passphrase.as_bytes(), ssid.as_bytes(), 4096, &mut pmk);
+    pmk
+}
+
+/// Issue one NL80211_CMD_CONNECT.
+///
+/// Open APs use OpenSystem with `privacy=false`. WPA2-PSK APs pass a PMK
+/// derived from `psk` so firmware that offloads the 4-way handshake can
+/// complete association. Errors from the command are surfaced rather than
+/// drained: a rejected CONNECT used to look like a successful association
+/// and only showed up later as an HTTP failure.
 async fn connect_once(
     handle: &wl_nl80211::Nl80211Handle,
     if_index: u32,
     ssid: &str,
     bssid: Option<[u8; 6]>,
+    psk: Option<&str>,
 ) -> Result<(), DriverError> {
-    use wl_nl80211::{Nl80211AuthType, Nl80211Connect};
+    use wl_nl80211::{
+        Nl80211AkmSuite, Nl80211Attr, Nl80211AuthType, Nl80211CipherSuite, Nl80211Connect,
+        Nl80211KeyAttr, Nl80211KeyType, Nl80211WpaVersions,
+    };
 
-    let mut builder = Nl80211Connect::new(if_index)
-        .ssid(ssid)
-        .auth_type(Nl80211AuthType::OpenSystem)
-        .privacy(false);
+    let mut builder = Nl80211Connect::new(if_index).ssid(ssid);
+    if let Some(passphrase) = psk {
+        let pmk = wpa2_pmk(ssid, passphrase);
+        builder = builder
+            .auth_type(Nl80211AuthType::OpenSystem)
+            .privacy(true)
+            .wpa_versions(Nl80211WpaVersions::WPA2)
+            .ciphers_pairwise(vec![Nl80211CipherSuite::Ccmp128])
+            .cipher_group(Nl80211CipherSuite::Ccmp128)
+            .akm_suites(vec![Nl80211AkmSuite::Psk])
+            .replace(Nl80211Attr::Key(vec![
+                Nl80211KeyAttr::Type(Nl80211KeyType::Pmk),
+                Nl80211KeyAttr::Data(pmk.to_vec()),
+            ]));
+    } else {
+        builder = builder
+            .auth_type(Nl80211AuthType::OpenSystem)
+            .privacy(false);
+    }
     if let Some(mac) = bssid {
         builder = builder.mac(mac);
     }
     let stream = handle.connection().connect(builder.build()).execute().await;
     await_nl80211(stream, "nl80211 connect").await
+}
+
+/// Bring the link up, CONNECT, wait for carrier; rescan and retry once.
+/// When a PSK is supplied and nl80211 CONNECT does not produce carrier
+/// (e.g. brcmfmac on Pi 5 does not offload the 4-way handshake), spawn
+/// `wpa_supplicant` on the interface as a fallback. The returned child
+/// must be killed by the caller on `release`.
+async fn associate(
+    iface: String,
+    if_index: u32,
+    ssid: String,
+    bssid: Option<[u8; 6]>,
+    psk: Option<String>,
+) -> Result<Option<std::process::Child>, DriverError> {
+    // `release` puts the link down, so without this a second job
+    // would try to associate on a down interface and silently fail.
+    set_link_up(if_index).await?;
+    log_rfkill();
+    log::debug!(
+        "connect: {ssid} on {iface} (up={} operstate={} carrier={:?} psk={})",
+        iface_is_up(&iface),
+        iface_operstate(&iface),
+        iface_carrier(&iface),
+        if psk.is_some() { "yes" } else { "no" }
+    );
+
+    let (connection, handle, _) = wl_nl80211::new_connection()
+        .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
+    tokio::spawn(connection);
+
+    match connect_once(&handle, if_index, &ssid, bssid, psk.as_deref()).await {
+        Ok(()) => {
+            log::debug!("connect: CONNECT accepted for {ssid}");
+            if wait_associated(&iface, ASSOCIATE_DEADLINE).await {
+                tokio::time::sleep(ASSOCIATE_SETTLE).await;
+                return Ok(None);
+            }
+            log::warn!("connect: {ssid} accepted but never gained carrier");
+        }
+        Err(e) => log::warn!("connect: CONNECT rejected for {ssid}: {e}"),
+    }
+
+    // The kernel drops its BSS cache when the link goes down, and
+    // CONNECT needs the AP in that cache. Re-scan and try once more
+    // so a stale cache does not fail the job.
+    log::warn!(
+        "connect: retrying {ssid} after a fresh scan (operstate={} carrier={:?})",
+        iface_operstate(&iface),
+        iface_carrier(&iface)
+    );
+    let found = run_scan(&iface, if_index, 64).await?;
+    if !found
+        .iter()
+        .any(|r| r.ssid.as_deref() == Some(ssid.as_str()))
+    {
+        log::warn!("connect: {ssid} is not in the rescan results");
+    }
+    connect_once(&handle, if_index, &ssid, bssid, psk.as_deref()).await?;
+    if !wait_associated(&iface, ASSOCIATE_DEADLINE).await {
+        log::warn!(
+            "connect: {ssid} still not associated (operstate={} carrier={:?})",
+            iface_operstate(&iface),
+            iface_carrier(&iface)
+        );
+        // Last resort: spawn wpa_supplicant on the programming interface.
+        // brcmfmac (Pi 5) does not offload the 4-way handshake from a PMK
+        // passed via nl80211 CONNECT, so the kernel never reaches carrier.
+        // wpa_supplicant runs in the foreground; the caller kills it on
+        // release so the radio is freed for the next job.
+        if let Some(ref passphrase) = psk {
+            log::info!("connect: {ssid} nl80211 CONNECT did not produce carrier; trying wpa_supplicant fallback");
+            let child = spawn_wpa_supplicant(&iface, &ssid, passphrase).await?;
+            log::info!("connect: {ssid} associated via wpa_supplicant");
+            return Ok(Some(child));
+        }
+        return Err(DriverError::AssociationTimedOut);
+    }
+    tokio::time::sleep(ASSOCIATE_SETTLE).await;
+    Ok(None)
+}
+
+/// Spawn `wpa_supplicant` on `iface` with a minimal config for `ssid`/`psk`,
+/// then wait for carrier. Returns the running child so the caller can kill it
+/// on `release`. The config file is written to a per-SSID temp directory and
+/// removed when the child is killed.
+async fn spawn_wpa_supplicant(
+    iface: &str,
+    ssid: &str,
+    psk: &str,
+) -> Result<std::process::Child, DriverError> {
+    // Disconnect via nl80211 first so the interface is not in a connecting
+    // state when wpa_supplicant takes over.
+    if let Ok((connection, handle, _)) = wl_nl80211::new_connection() {
+        tokio::spawn(connection);
+        use wl_nl80211::Nl80211Disconnect;
+        let attrs = Nl80211Disconnect::new(iface_to_index(iface).unwrap_or(0)).build();
+        let mut stream = handle.connection().disconnect(attrs).execute().await;
+        use futures::stream::TryStreamExt;
+        let _ = stream.try_next().await;
+    }
+
+    let dir = std::env::temp_dir().join(format!("wp-wpa-{}", sanitize(ssid)));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| DriverError::Other(format!("wpa_supplicant temp dir: {e}")))?;
+    let conf_path = dir.join("wpa_supplicant.conf");
+    let config = format!(
+        "ctrl_interface=/dev/null\n\
+         network={{\n  ssid=\"{ssid}\"\n  psk=\"{psk}\"\n}}\n"
+    );
+    std::fs::write(&conf_path, &config)
+        .map_err(|e| DriverError::Other(format!("wpa_supplicant config: {e}")))?;
+
+    log::info!("wpa_supplicant: spawning on {iface} for {ssid}");
+    let mut child = std::process::Command::new("wpa_supplicant")
+        .args([
+            "-i",
+            iface,
+            "-c",
+            conf_path.to_str().unwrap_or("wpa_supplicant.conf"),
+            "-C",
+            dir.join("ctrl").to_str().unwrap_or("/tmp/wp-wpa-ctrl"),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| DriverError::Other(format!("spawn wpa_supplicant: {e}")))?;
+
+    // Wait for carrier (reuse the nl80211 deadline).
+    let deadline = ASSOCIATE_DEADLINE;
+    let start = std::time::Instant::now();
+    loop {
+        if iface_carrier(iface).is_some() {
+            tokio::time::sleep(ASSOCIATE_SETTLE).await;
+            return Ok(child);
+        }
+        if start.elapsed() >= deadline {
+            log::warn!(
+                "wpa_supplicant: {ssid} no carrier after {:?}, killing",
+                deadline
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(DriverError::AssociationTimedOut);
+        }
+        tokio::time::sleep(ASSOCIATE_POLL).await;
+    }
+}
+
+/// Replace characters that are not safe in a path component with `_`.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Look up an interface index by name via `/sys/class/net`.
+fn iface_to_index(iface: &str) -> Option<u32> {
+    let path = format!("/sys/class/net/{iface}/ifindex");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
 }
 
 fn log_rfkill() {
@@ -580,6 +788,7 @@ impl Nl80211Radio {
             saved_conf: crate::netcfg::SavedConf::default(),
             assigned: None,
             policy: None,
+            supplicant: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -606,58 +815,22 @@ impl Radio for Nl80211Radio {
         let iface = self.iface.clone();
         let ssid = ssid.to_string();
         Box::pin(async move {
-            // `release` puts the link down, so without this a second job
-            // would try to associate on a down interface and silently fail.
-            set_link_up(if_index).await?;
-            log_rfkill();
-            log::debug!(
-                "connect: {ssid} on {iface} (up={} operstate={} carrier={:?})",
-                iface_is_up(&iface),
-                iface_operstate(&iface),
-                iface_carrier(&iface)
-            );
+            associate(iface, if_index, ssid, bssid, None).await?;
+            Ok(())
+        })
+    }
 
-            let (connection, handle, _) = wl_nl80211::new_connection()
-                .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
-            tokio::spawn(connection);
-
-            match connect_once(&handle, if_index, &ssid, bssid).await {
-                Ok(()) => {
-                    log::debug!("connect: CONNECT accepted for {ssid}");
-                    if wait_associated(&iface, ASSOCIATE_DEADLINE).await {
-                        tokio::time::sleep(ASSOCIATE_SETTLE).await;
-                        return Ok(());
-                    }
-                    log::warn!("connect: {ssid} accepted but never gained carrier");
-                }
-                Err(e) => log::warn!("connect: CONNECT rejected for {ssid}: {e}"),
+    fn connect_psk(&mut self, ssid: &str, bssid: Option<[u8; 6]>, psk: &str) -> RadioFut<'_, ()> {
+        let if_index = self.if_index;
+        let iface = self.iface.clone();
+        let ssid = ssid.to_string();
+        let psk = psk.to_string();
+        let supplicant = Arc::clone(&self.supplicant);
+        Box::pin(async move {
+            let child = associate(iface, if_index, ssid, bssid, Some(psk)).await?;
+            if let Some(child) = child {
+                *supplicant.lock().unwrap() = Some(child);
             }
-
-            // The kernel drops its BSS cache when the link goes down, and
-            // CONNECT needs the AP in that cache. Re-scan and try once more
-            // so a stale cache does not fail the job.
-            log::warn!(
-                "connect: retrying {ssid} after a fresh scan (operstate={} carrier={:?})",
-                iface_operstate(&iface),
-                iface_carrier(&iface)
-            );
-            let found = run_scan(&iface, if_index, 64).await?;
-            if !found
-                .iter()
-                .any(|r| r.ssid.as_deref() == Some(ssid.as_str()))
-            {
-                log::warn!("connect: {ssid} is not in the rescan results");
-            }
-            connect_once(&handle, if_index, &ssid, bssid).await?;
-            if !wait_associated(&iface, ASSOCIATE_DEADLINE).await {
-                log::warn!(
-                    "connect: {ssid} still not associated (operstate={} carrier={:?})",
-                    iface_operstate(&iface),
-                    iface_carrier(&iface)
-                );
-                return Err(DriverError::AssociationTimedOut);
-            }
-            tokio::time::sleep(ASSOCIATE_SETTLE).await;
             Ok(())
         })
     }
@@ -724,9 +897,19 @@ impl Radio for Nl80211Radio {
         let iface = self.iface.clone();
         let assigned = self.assigned.take();
         let policy = self.policy.take();
+        let supplicant = self.supplicant.lock().unwrap().take();
         crate::netcfg::restore(&self.saved_conf);
         self.saved_conf = crate::netcfg::SavedConf::default();
         Box::pin(async move {
+            // Kill the wpa_supplicant fallback first so it does not fight
+            // the nl80211 DISCONNECT below.
+            if let Some(mut child) = supplicant {
+                log::debug!("release: killing wpa_supplicant pid={}", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                let dir = std::env::temp_dir().join(format!("wp-wpa-{}", sanitize(&iface)));
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             if let Some(ref route) = policy {
                 crate::netcfg::remove_policy_route(route);
             }
@@ -900,5 +1083,22 @@ mod tests {
         }
         assert!(iface_is_up("lo"));
         assert!(!iface_is_up("does-not-exist"));
+    }
+
+    #[test]
+    fn wpa2_pmk_matches_ieee_test_vector() {
+        // IEEE 802.11-2012 Annex J (passphrase "password", SSID "IEEE").
+        let pmk = wpa2_pmk("IEEE", "password");
+        let expected = hex_32("f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e");
+        assert_eq!(pmk, expected);
+    }
+
+    fn hex_32(s: &str) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        for (i, chunk) in s.as_bytes().chunks(2).enumerate() {
+            let byte = u8::from_str_radix(std::str::from_utf8(chunk).unwrap(), 16).unwrap();
+            out[i] = byte;
+        }
+        out
     }
 }

@@ -9,7 +9,7 @@ use wp_core::{
     CommissioningNet, DeviceCandidate, DeviceDriver, DriverCapabilities, DriverError, Observation,
     Outcome, ProgramRequest, ProgressSink, Transport,
 };
-use wp_drivers::{FredDriver, LongFredDriver, WiFredDriver};
+use wp_drivers::{FredDriver, LongFredDriver, Rb23xxDriver, WiFredDriver};
 
 /// All registered drivers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,6 +20,8 @@ pub enum Driver {
     LongFred,
     /// Digitrax FRED via Z21 LAN LocoNet dispatch.
     Fred,
+    /// RailBOX RB23xx decoder Soft-AP firmware upload.
+    Rb23xx,
 }
 
 impl Driver {
@@ -29,6 +31,7 @@ impl Driver {
             Driver::WiFred => "wifred",
             Driver::LongFred => "longfred",
             Driver::Fred => "fred",
+            Driver::Rb23xx => "rb23xx",
         }
     }
 
@@ -38,6 +41,7 @@ impl Driver {
             Driver::WiFred => "NewHeiko WiFred",
             Driver::LongFred => "LongFred",
             Driver::Fred => "Digitrax FRED",
+            Driver::Rb23xx => "RailBOX RB23xx",
         }
     }
 
@@ -57,6 +61,7 @@ impl Driver {
                 source: Ipv4Addr::UNSPECIFIED,
                 prefix: 0,
             },
+            Driver::Rb23xx => wp_drivers::rb23xx::commissioning_net(),
         }
     }
 
@@ -66,6 +71,7 @@ impl Driver {
             "wifred" => Some(Driver::WiFred),
             "longfred" => Some(Driver::LongFred),
             "fred" => Some(Driver::Fred),
+            "rb23xx" => Some(Driver::Rb23xx),
             _ => None,
         }
     }
@@ -77,6 +83,7 @@ pub struct DriverRegistry {
     wifred: WiFredDriver,
     longfred: LongFredDriver,
     fred: FredDriver,
+    rb23xx: Rb23xxDriver,
 }
 
 impl DriverRegistry {
@@ -86,6 +93,7 @@ impl DriverRegistry {
             wifred: WiFredDriver::new(),
             longfred: LongFredDriver::new(),
             fred: FredDriver::new(),
+            rb23xx: Rb23xxDriver::new(),
         }
     }
 
@@ -95,6 +103,7 @@ impl DriverRegistry {
             (Driver::WiFred, self.wifred.capabilities()),
             (Driver::LongFred, self.longfred.capabilities()),
             (Driver::Fred, self.fred.capabilities()),
+            (Driver::Rb23xx, self.rb23xx.capabilities()),
         ]
     }
 
@@ -120,6 +129,7 @@ impl DriverRegistry {
         self.longfred
             .identify(obs)
             .or_else(|| self.wifred.identify(obs))
+            .or_else(|| self.rb23xx.identify(obs))
     }
 
     /// Validate a request against the driver's capabilities.
@@ -132,6 +142,7 @@ impl DriverRegistry {
             Driver::WiFred => self.wifred.validate(req),
             Driver::LongFred => self.longfred.validate(req),
             Driver::Fred => self.fred.validate(req),
+            Driver::Rb23xx => self.rb23xx.validate(req),
         }
     }
 
@@ -145,6 +156,7 @@ impl DriverRegistry {
             Driver::WiFred => self.wifred.probe(transport).await,
             Driver::LongFred => self.longfred.probe(transport).await,
             Driver::Fred => self.fred.probe(transport).await,
+            Driver::Rb23xx => self.rb23xx.probe(transport).await,
         }
     }
 
@@ -160,16 +172,23 @@ impl DriverRegistry {
             Driver::WiFred => self.wifred.program(transport, req, progress).await,
             Driver::LongFred => self.longfred.program(transport, req, progress).await,
             Driver::Fred => self.fred.program(transport, req, progress).await,
+            Driver::Rb23xx => self.rb23xx.program(transport, req, progress).await,
         }
     }
 
-    /// Whether this driver can upload firmware over HTTP.
-    pub fn supports_firmware_update(&self, driver: Driver) -> bool {
+    /// Capabilities advertised via `hello` and used by shared job code.
+    pub fn capabilities(&self, driver: Driver) -> DriverCapabilities {
         match driver {
-            Driver::WiFred => self.wifred.capabilities().supports_firmware_update,
-            Driver::LongFred => self.longfred.capabilities().supports_firmware_update,
-            Driver::Fred => false,
+            Driver::WiFred => self.wifred.capabilities(),
+            Driver::LongFred => self.longfred.capabilities(),
+            Driver::Fred => self.fred.capabilities(),
+            Driver::Rb23xx => self.rb23xx.capabilities(),
         }
+    }
+
+    /// Whether this driver can upload firmware.
+    pub fn supports_firmware_update(&self, driver: Driver) -> bool {
+        self.capabilities(driver).firmware.is_some()
     }
 
     /// Upload firmware over the supplied transport.
@@ -178,20 +197,30 @@ impl DriverRegistry {
         driver: Driver,
         transport: Transport<'_>,
         image: &[u8],
+        filename: &str,
         progress: &mut dyn ProgressSink,
     ) -> Result<Outcome, DriverError> {
         match driver {
-            Driver::WiFred => Err(DriverError::Other(
-                "firmware update is not supported".into(),
-            )),
-            Driver::LongFred => {
-                self.longfred
-                    .update_firmware(transport, image, progress)
+            Driver::WiFred => {
+                self.wifred
+                    .update_firmware(transport, image, filename, progress)
                     .await
             }
-            Driver::Fred => Err(DriverError::Other(
-                "firmware update is not supported".into(),
-            )),
+            Driver::LongFred => {
+                self.longfred
+                    .update_firmware(transport, image, filename, progress)
+                    .await
+            }
+            Driver::Fred => {
+                self.fred
+                    .update_firmware(transport, image, filename, progress)
+                    .await
+            }
+            Driver::Rb23xx => {
+                self.rb23xx
+                    .update_firmware(transport, image, filename, progress)
+                    .await
+            }
         }
     }
 
@@ -223,6 +252,9 @@ impl DriverRegistry {
             Driver::Fred => Err(DriverError::Other(
                 "FRED has no LED identify over Z21 LAN".into(),
             )),
+            Driver::Rb23xx => Err(DriverError::Other(
+                "RB23xx has no LED identify over Soft-AP".into(),
+            )),
         }
     }
 
@@ -234,6 +266,11 @@ impl DriverRegistry {
     /// Borrow the LongFred driver.
     pub fn longfred(&self) -> &LongFredDriver {
         &self.longfred
+    }
+
+    /// Borrow the RB23xx driver.
+    pub fn rb23xx(&self) -> &Rb23xxDriver {
+        &self.rb23xx
     }
 }
 

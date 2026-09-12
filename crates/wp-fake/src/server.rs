@@ -101,6 +101,10 @@ async fn handle_connection(
         })
     };
 
+    if response.drop_without_reply {
+        return Ok(());
+    }
+
     write_response(&mut stream, &response).await
 }
 

@@ -38,13 +38,16 @@ type CommissioningKindWire string
 
 // CapabilitiesWire mirrors wp_proto::CapabilitiesWire.
 type CapabilitiesWire struct {
-	MaxRosterSlots         uint8                 `json:"maxRosterSlots"`
-	MaxFunctionIndex       uint8                 `json:"maxFunctionIndex"`
-	IdentityFormat         IdentityFormatWire    `json:"identityFormat"`
-	SupportsThrottleServer bool                  `json:"supportsThrottleServer"`
-	SupportsFirmwareUpdate bool                  `json:"supportsFirmwareUpdate"`
-	Commissioning          CommissioningKindWire `json:"commissioning"`
-	CommissioningNet       *CommissioningNetWire `json:"commissioningNet,omitempty"`
+	MaxRosterSlots           uint8                 `json:"maxRosterSlots"`
+	MaxFunctionIndex         uint8                 `json:"maxFunctionIndex"`
+	IdentityFormat           IdentityFormatWire    `json:"identityFormat"`
+	SupportsThrottleServer   bool                  `json:"supportsThrottleServer"`
+	SupportsFirmwareUpdate   bool                  `json:"supportsFirmwareUpdate"`
+	Commissioning            CommissioningKindWire `json:"commissioning"`
+	CommissioningNet         *CommissioningNetWire `json:"commissioningNet,omitempty"`
+	MaxFirmwareBytes         *uint64               `json:"maxFirmwareBytes,omitempty"`
+	FirmwareModes            []string              `json:"firmwareModes,omitempty"`
+	FirmwareRequireEspAppBin bool                  `json:"firmwareRequireEspAppBin,omitempty"`
 }
 
 // CommissioningNetWire mirrors wp_proto::CommissioningNetWire.
