@@ -8,7 +8,7 @@ use std::net::Ipv4Addr;
 pub const WIFI_CONFIG_SSID_PREFIXES: &[&str] = &["RB2300_", "RB2310_", "RB2302_"];
 
 /// Factory Soft-AP passphrase. Never logged.
-pub const SOFTAP_PSK: &str = "000000000";
+pub const SOFTAP_PSK: &str = "00000000";
 
 /// Config AP HTTP port.
 pub const CONFIG_AP_PORT: u16 = 80;

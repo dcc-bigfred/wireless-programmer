@@ -315,7 +315,7 @@ mod tests {
             supports_throttle_server: false,
             commissioning: CommissioningKind::SoftAp,
             commissioning_net: None,
-            softap_psk: Some("000000000"),
+            softap_psk: Some("00000000"),
             firmware: Some(fw),
         });
         assert!(wire.supports_firmware_update);

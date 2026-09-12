@@ -118,6 +118,18 @@ impl BoundedHttpClient {
         self
     }
 
+    /// Override the TCP connect deadline.
+    pub fn with_connect_deadline(mut self, d: Duration) -> Self {
+        self.connect_deadline = d;
+        self
+    }
+
+    /// Override the delay between retries.
+    pub fn with_retry_delay(mut self, d: Duration) -> Self {
+        self.retry_delay = d;
+        self
+    }
+
     /// Abort in-flight I/O when `cancel` becomes true (firmware POST).
     pub fn with_cancel(mut self, cancel: Arc<AtomicBool>) -> Self {
         self.cancel = Some(cancel);
@@ -302,7 +314,13 @@ impl BoundedHttpClient {
         }
 
         let body_start = locate_body(&buf)?;
-        if buf.len() - body_start > self.max_body {
+        let raw_body = &buf[body_start..];
+        let body = if is_chunked(&buf[..body_start]) {
+            decode_chunked(raw_body)?
+        } else {
+            raw_body.to_vec()
+        };
+        if body.len() > self.max_body {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "response body exceeds max body size",
@@ -315,7 +333,7 @@ impl BoundedHttpClient {
                 format!("unexpected HTTP status {status}"),
             ));
         }
-        Ok(buf[body_start..].to_vec())
+        Ok(body)
     }
 }
 
@@ -396,16 +414,6 @@ impl BoundedHttpClient {
             src,
             dev
         );
-        if let Some(dev) = dev {
-            if let Ok(neigh) = std::fs::read_to_string("/proc/net/arp") {
-                for line in neigh.lines().skip(1) {
-                    let cols: Vec<&str> = line.split_whitespace().collect();
-                    if cols.len() >= 7 && cols[0] == dst.to_string() && cols[5] == dev {
-                        log::debug!("arp: {dst} -> {} dev={dev} state={}", cols[3], cols[5]);
-                    }
-                }
-            }
-        }
         if let Some(src) = src {
             let src_s = src.to_string();
             let dst_s = dst.to_string();
@@ -430,10 +438,13 @@ impl BoundedHttpClient {
                 );
             }
         }
-        match icmp_probe(dst, src, dev, Duration::from_secs(2)) {
+        // ESP Soft-AP often ignores ICMP; use it only to trigger ARP, then
+        // wait for a complete neighbour before the first TCP SYN.
+        match icmp_probe(dst, src, dev, Duration::from_millis(400)) {
             Ok(()) => log::info!("icmp probe: {dst} replied (L3 ok)"),
-            Err(e) => log::warn!("icmp probe: {dst} failed: {e} (kind={:?})", e.kind()),
+            Err(e) => log::debug!("icmp probe: {dst} failed: {e} (kind={:?})", e.kind()),
         }
+        wait_arp(dst, src, dev, Duration::from_secs(5));
     }
 
     /// Explain the two failure modes caused by a Soft-AP whose address the
@@ -449,6 +460,7 @@ impl BoundedHttpClient {
         let Ok(dst) = self.host.parse::<std::net::Ipv4Addr>() else {
             return;
         };
+        log_arp(dst, self.device.as_deref());
         if !crate::netcfg::is_local_address(dst) {
             return;
         }
@@ -590,18 +602,85 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
     None
 }
 
-/// `true` when `buf` holds a full HTTP response (headers + `Content-Length` body).
+fn is_chunked(headers: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(headers) else {
+        return false;
+    };
+    for line in text.split("\r\n") {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return value
+                .split(',')
+                .any(|t| t.trim().eq_ignore_ascii_case("chunked"));
+        }
+    }
+    false
+}
+
+/// Decode a complete `Transfer-Encoding: chunked` body. Incomplete input is
+/// [`io::ErrorKind::InvalidData`].
+fn decode_chunked(body: &[u8]) -> io::Result<Vec<u8>> {
+    let mut pos = 0;
+    let mut out = Vec::new();
+    loop {
+        let Some(rel) = body[pos..].windows(2).position(|w| w == b"\r\n") else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated chunk size",
+            ));
+        };
+        let nl = pos + rel;
+        let size_line = &body[pos..nl];
+        let size_s = size_line.split(|&b| b == b';').next().unwrap_or(size_line);
+        let size_txt = std::str::from_utf8(size_s)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            .trim();
+        let size = usize::from_str_radix(size_txt, 16).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("chunk size: {e}"))
+        })?;
+        pos = nl + 2;
+        if size == 0 {
+            return Ok(out);
+        }
+        if pos + size + 2 > body.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated chunk data",
+            ));
+        }
+        out.extend_from_slice(&body[pos..pos + size]);
+        pos += size;
+        if body.get(pos..pos + 2) != Some(&b"\r\n"[..]) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing chunk CRLF",
+            ));
+        }
+        pos += 2;
+    }
+}
+
+/// `true` when `buf` holds a full HTTP response.
 ///
-/// Stop reading on a complete message instead of waiting for EOF: embassy-net
-/// `abort()` after the response is a RST, not a FIN.
+/// RailBOX file-browser listings are `Transfer-Encoding: chunked` and the
+/// ESP httpd **does not close** the TCP connection (even after `Connection:
+/// close`). LongFred uses `Content-Length` or RST. Stop on either complete
+/// body, not EOF.
 fn http_message_complete(buf: &[u8]) -> bool {
     let Ok(start) = locate_body(buf) else {
         return false;
     };
-    let Some(len) = parse_content_length(&buf[..start]) else {
-        return false;
-    };
-    buf.len() - start >= len
+    let headers = &buf[..start];
+    let body = &buf[start..];
+    if let Some(len) = parse_content_length(headers) {
+        return body.len() >= len;
+    }
+    if is_chunked(headers) {
+        return decode_chunked(body).is_ok();
+    }
+    false
 }
 
 /// Parse the HTTP status code from the status line.
@@ -631,6 +710,62 @@ pub fn percent_encode(input: &str) -> String {
         }
     }
     out
+}
+
+/// `/proc/net/arp` row for `dst` on `dev`, when present.
+///
+/// Columns: IP, HW type, Flags, HW address, Mask, Device.
+/// Flags `0x2` means a complete neighbour.
+fn arp_row(dst: Ipv4Addr, dev: Option<&str>) -> Option<(String, String, String)> {
+    let table = std::fs::read_to_string("/proc/net/arp").ok()?;
+    let want = dst.to_string();
+    for line in table.lines().skip(1) {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 6 || cols[0] != want {
+            continue;
+        }
+        if let Some(dev) = dev {
+            if cols[5] != dev {
+                continue;
+            }
+        }
+        return Some((cols[2].to_string(), cols[3].to_string(), cols[5].to_string()));
+    }
+    None
+}
+
+fn arp_complete(dst: Ipv4Addr, dev: Option<&str>) -> bool {
+    arp_row(dst, dev).is_some_and(|(flags, mac, _)| {
+        flags.contains('2') && mac != "00:00:00:00:00:00"
+    })
+}
+
+fn log_arp(dst: Ipv4Addr, dev: Option<&str>) {
+    match arp_row(dst, dev) {
+        Some((flags, mac, iface)) => log::info!("arp: {dst} -> {mac} flags={flags} dev={iface}"),
+        None => log::warn!("arp: no neighbour for {dst} on {}", dev.unwrap_or("any")),
+    }
+}
+
+fn wait_arp(dst: Ipv4Addr, src: Option<Ipv4Addr>, dev: Option<&str>, deadline: Duration) {
+    let start = Instant::now();
+    loop {
+        if arp_complete(dst, dev) {
+            log_arp(dst, dev);
+            return;
+        }
+        if start.elapsed() >= deadline {
+            log::warn!(
+                "arp: {dst} incomplete after {:?} on {}",
+                deadline,
+                dev.unwrap_or("any")
+            );
+            log_arp(dst, dev);
+            return;
+        }
+        let _ = icmp_probe(dst, src, dev, Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 /// Send one ICMP echo to `dst`, bound to `source` and `device`.
@@ -740,6 +875,19 @@ mod tests {
         assert!(http_message_complete(buf));
         assert!(!http_message_complete(&buf[..buf.len() - 1]));
         assert!(!http_message_complete(b"HTTP/1.1 200 OK\r\n\r\n"));
+    }
+
+    #[test]
+    fn http_message_complete_chunked_without_tcp_close() {
+        let buf = concat!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+            "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n"
+        )
+        .as_bytes();
+        assert!(http_message_complete(buf));
+        assert!(!http_message_complete(&buf[..buf.len() - 5]));
+        let start = locate_body(buf).unwrap();
+        assert_eq!(decode_chunked(&buf[start..]).unwrap(), b"hello world");
     }
 
     #[test]

@@ -1369,14 +1369,20 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             let _hold = RadioHold::new(rt);
             let mut radio = rt.radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            if let Err(e) = radio_join(
-                radio.as_mut(),
-                &candidate.ssid,
-                bssid,
-                rt.registry.capabilities(driver).softap_psk,
-            )
-            .await
-            {
+            let psk = rt.registry.capabilities(driver).softap_psk;
+            let join_result = {
+                let join = radio_join(radio.as_mut(), &candidate.ssid, bssid, psk);
+                tokio::pin!(join);
+                loop {
+                    tokio::select! {
+                        r = &mut join => break r,
+                        _ = tokio::time::sleep(crate::jobs::WATCH_HEARTBEAT) => {
+                            sink.detail("associating");
+                        }
+                    }
+                }
+            };
+            if let Err(e) = join_result {
                 rt.jobs.transition(
                     &id,
                     JobState::Failed,
@@ -1568,7 +1574,9 @@ fn make_firmware_http_client(
 ) -> BoundedHttpClient {
     let mut c = BoundedHttpClient::new(host, port)
         .with_deadline(crate::jobs::FIRMWARE_DEADLINE)
-        .with_retries(0)
+        .with_retries(3)
+        .with_retry_delay(Duration::from_secs(1))
+        .with_connect_deadline(Duration::from_secs(5))
         .with_success_on_reset_after_write(success_on_reset_after_write);
     if let Some(src) = source {
         c = c.with_source(src);

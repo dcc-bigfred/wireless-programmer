@@ -10,10 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **RB23xx driver** — Soft-AP discovery (`RB2300_*` / `RB2310_*` / `RB2302_*`),
-  WPA2-PSK join (factory password, never logged), and firmware `.bin` upload
-  via `POST /upload?p=/{filename}` matching the `rb` CLI. Max 5 MiB, 120 s
-  deadline, no retries. A TCP reset after a full write is success (decoder
-  reboot). Soft-AP only.
+  WPA2-PSK join (factory password `00000000`, never logged), and firmware
+  `.bin` upload via `POST /upload?p=/{filename}` matching the `rb` CLI. Max
+  5 MiB, 120 s deadline. A TCP reset after a full write is success (decoder
+  reboot). Soft-AP only. The HTTP client accepts `Transfer-Encoding: chunked`
+  (RailBOX file browser keeps the TCP connection open).
 
 ### Changed
 
@@ -23,10 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `update_firmware` is now a `DeviceDriver` trait method (uniform
   `filename` parameter); the registry no longer manually dispatches with
   per-driver signatures.
-- WPA2-PSK join falls back to `wpa_supplicant` on the programming
-  interface when nl80211 CONNECT with a PMK does not produce carrier
-  (brcmfmac on Pi 5 does not offload the 4-way handshake). The supplicant
-  is killed on radio release.
+- WPA2-PSK join always uses `wpa_supplicant` on the programming interface
+  (USB adapters and brcmfmac do not complete a 4-way handshake from a PMK
+  passed via nl80211 CONNECT). The supplicant is killed on radio release.
+  Association waits for `CTRL-EVENT-CONNECTED`, not carrier alone.
 - LongFred Soft-AP commissioning addresses are now `192.168.4.1` / source
   `192.168.4.2` (ESP-IDF default, same as WiFred). This no longer overlaps
   the BigFred hub LAN (`192.168.0.0/24`). Requires matching LongFred

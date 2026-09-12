@@ -8,8 +8,10 @@
 //! removal.
 
 use std::future::Future;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use wp_core::DriverError;
@@ -265,7 +267,11 @@ const ASSOCIATE_POLL: std::time::Duration = std::time::Duration::from_millis(100
 /// Pause after association so the device's HTTP server is ready. ESP32
 /// lwIP needs longer than a typical Wi-Fi settle to start accepting TCP
 /// connections on port 80.
-const ASSOCIATE_SETTLE: std::time::Duration = std::time::Duration::from_millis(1500);
+const ASSOCIATE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
+/// Extra wait after carrier for `operstate=up` (clears IFF_DORMANT).
+const OPERSTATE_UP_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// wpa_supplicant scan + 4-way can exceed the nl80211 CONNECT deadline.
+const WPA_ASSOCIATE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// 2.4 GHz centre frequencies (channels 1–13). LongFred/WiFred Soft-APs are
 /// 2.4 GHz only; a dual-band CYW43455 scan spends most of its dwell on 5 GHz.
@@ -397,11 +403,14 @@ async fn connect_once(
     await_nl80211(stream, "nl80211 connect").await
 }
 
-/// Bring the link up, CONNECT, wait for carrier; rescan and retry once.
-/// When a PSK is supplied and nl80211 CONNECT does not produce carrier
-/// (e.g. brcmfmac on Pi 5 does not offload the 4-way handshake), spawn
-/// `wpa_supplicant` on the interface as a fallback. The returned child
-/// must be killed by the caller on `release`.
+/// Bring the link up and associate.
+///
+/// Open networks use nl80211 CONNECT (rescan + retry once). WPA2-PSK
+/// always goes through `wpa_supplicant`: USB adapters and brcmfmac do not
+/// offload the 4-way handshake from a PMK passed via CONNECT, and two failed
+/// CONNECT attempts leave an ESP Soft-AP half-associated so HTTP later
+/// times out even after carrier comes up. The returned child must be
+/// killed by the caller on `release`.
 async fn associate(
     iface: String,
     if_index: u32,
@@ -421,11 +430,18 @@ async fn associate(
         if psk.is_some() { "yes" } else { "no" }
     );
 
+    if let Some(ref passphrase) = psk {
+        log::info!("connect: {ssid} using wpa_supplicant (PSK)");
+        let child = spawn_wpa_supplicant(&iface, &ssid, passphrase).await?;
+        log::info!("connect: {ssid} associated via wpa_supplicant");
+        return Ok(Some(child));
+    }
+
     let (connection, handle, _) = wl_nl80211::new_connection()
         .map_err(|e| DriverError::Other(format!("nl80211 connection: {e}")))?;
     tokio::spawn(connection);
 
-    match connect_once(&handle, if_index, &ssid, bssid, psk.as_deref()).await {
+    match connect_once(&handle, if_index, &ssid, bssid, None).await {
         Ok(()) => {
             log::debug!("connect: CONNECT accepted for {ssid}");
             if wait_associated(&iface, ASSOCIATE_DEADLINE).await {
@@ -452,24 +468,13 @@ async fn associate(
     {
         log::warn!("connect: {ssid} is not in the rescan results");
     }
-    connect_once(&handle, if_index, &ssid, bssid, psk.as_deref()).await?;
+    connect_once(&handle, if_index, &ssid, bssid, None).await?;
     if !wait_associated(&iface, ASSOCIATE_DEADLINE).await {
         log::warn!(
             "connect: {ssid} still not associated (operstate={} carrier={:?})",
             iface_operstate(&iface),
             iface_carrier(&iface)
         );
-        // Last resort: spawn wpa_supplicant on the programming interface.
-        // brcmfmac (Pi 5) does not offload the 4-way handshake from a PMK
-        // passed via nl80211 CONNECT, so the kernel never reaches carrier.
-        // wpa_supplicant runs in the foreground; the caller kills it on
-        // release so the radio is freed for the next job.
-        if let Some(ref passphrase) = psk {
-            log::info!("connect: {ssid} nl80211 CONNECT did not produce carrier; trying wpa_supplicant fallback");
-            let child = spawn_wpa_supplicant(&iface, &ssid, passphrase).await?;
-            log::info!("connect: {ssid} associated via wpa_supplicant");
-            return Ok(Some(child));
-        }
         return Err(DriverError::AssociationTimedOut);
     }
     tokio::time::sleep(ASSOCIATE_SETTLE).await;
@@ -500,9 +505,16 @@ async fn spawn_wpa_supplicant(
     std::fs::create_dir_all(&dir)
         .map_err(|e| DriverError::Other(format!("wpa_supplicant temp dir: {e}")))?;
     let conf_path = dir.join("wpa_supplicant.conf");
+    let ssid_q = wpa_quote(ssid);
+    let psk_q = wpa_quote(psk);
     let config = format!(
-        "ctrl_interface=/dev/null\n\
-         network={{\n  ssid=\"{ssid}\"\n  psk=\"{psk}\"\n}}\n"
+        "ap_scan=1\n\
+         network={{\n\
+         \tssid=\"{ssid_q}\"\n\
+         \tscan_ssid=1\n\
+         \tpsk=\"{psk_q}\"\n\
+         \tkey_mgmt=WPA-PSK\n\
+         }}\n"
     );
     std::fs::write(&conf_path, &config)
         .map_err(|e| DriverError::Other(format!("wpa_supplicant config: {e}")))?;
@@ -514,25 +526,45 @@ async fn spawn_wpa_supplicant(
             iface,
             "-c",
             conf_path.to_str().unwrap_or("wpa_supplicant.conf"),
-            "-C",
-            dir.join("ctrl").to_str().unwrap_or("/tmp/wp-wpa-ctrl"),
         ])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| DriverError::Other(format!("spawn wpa_supplicant: {e}")))?;
+    let four_way_ok = Arc::new(AtomicBool::new(false));
+    let four_way_fail = Arc::new(AtomicBool::new(false));
+    pipe_wpa_logs(
+        &mut child,
+        Arc::clone(&four_way_ok),
+        Arc::clone(&four_way_fail),
+    );
 
-    // Wait for carrier (reuse the nl80211 deadline).
-    let deadline = ASSOCIATE_DEADLINE;
+    // Carrier goes true at 802.11 Associate, *before* the 4-way handshake.
+    // HTTP on a half-associated link gets incomplete ARP / EHOSTUNREACH.
+    let deadline = WPA_ASSOCIATE_DEADLINE;
     let start = std::time::Instant::now();
     loop {
-        if iface_carrier(iface).is_some() {
+        if four_way_fail.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(DriverError::Other(
+                "wpa_supplicant: 4-way handshake failed (PSK rejected)".into(),
+            ));
+        }
+        if four_way_ok.load(Ordering::Relaxed) {
+            log::info!(
+                "wpa_supplicant: {ssid} 4-way complete on {iface} (operstate={} carrier={:?})",
+                iface_operstate(iface),
+                iface_carrier(iface)
+            );
+            wait_operstate_up(iface).await;
             tokio::time::sleep(ASSOCIATE_SETTLE).await;
             return Ok(child);
         }
         if start.elapsed() >= deadline {
             log::warn!(
-                "wpa_supplicant: {ssid} no carrier after {:?}, killing",
+                "wpa_supplicant: {ssid} no CTRL-EVENT-CONNECTED after {:?}, killing",
                 deadline
             );
             let _ = child.kill();
@@ -541,6 +573,67 @@ async fn spawn_wpa_supplicant(
             return Err(DriverError::AssociationTimedOut);
         }
         tokio::time::sleep(ASSOCIATE_POLL).await;
+    }
+}
+
+fn wpa_quote(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn pipe_wpa_logs(
+    child: &mut std::process::Child,
+    connected: Arc<AtomicBool>,
+    failed: Arc<AtomicBool>,
+) {
+    fn watch(
+        stream: impl std::io::Read + Send + 'static,
+        name: &'static str,
+        connected: Arc<AtomicBool>,
+        failed: Arc<AtomicBool>,
+    ) {
+        std::thread::spawn(move || {
+            for line in BufReader::new(stream).lines() {
+                match line {
+                    Ok(l) if !l.is_empty() => {
+                        log::info!("wpa_supplicant[{name}]: {l}");
+                        if l.contains("CTRL-EVENT-CONNECTED") {
+                            connected.store(true, Ordering::Relaxed);
+                        }
+                        if l.contains("WRONG_KEY") || l.contains("4-Way Handshake failed") {
+                            failed.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+    if let Some(stdout) = child.stdout.take() {
+        watch(stdout, "out", Arc::clone(&connected), Arc::clone(&failed));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        watch(stderr, "err", connected, failed);
+    }
+}
+
+async fn wait_operstate_up(iface: &str) {
+    let start = std::time::Instant::now();
+    while iface_operstate(iface) != "up" && start.elapsed() < OPERSTATE_UP_WAIT {
+        tokio::time::sleep(ASSOCIATE_POLL).await;
+    }
+    let oper = iface_operstate(iface);
+    if oper == "up" {
+        log::info!(
+            "wpa_supplicant: {iface} operstate=up after {} ms",
+            start.elapsed().as_millis()
+        );
+    } else {
+        log::warn!(
+            "wpa_supplicant: {iface} still operstate={oper} carrier={:?} after {:?}",
+            iface_carrier(iface),
+            OPERSTATE_UP_WAIT
+        );
     }
 }
 
