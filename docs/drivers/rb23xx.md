@@ -32,6 +32,9 @@ Turning F28 on is out of scope for this driver.
 | `identityFormat`         | `Any`                           |
 | `supportsThrottleServer` | false                           |
 | `supportsFirmwareUpdate` | true                            |
+| `maxFirmwareBytes`       | 5 MiB                           |
+| `firmwareModes`          | `ap`                            |
+| `firmwareRequireEspAppBin` | false                         |
 | `commissioning`          | `SoftAp`                        |
 | `commissioningNet`       | `192.168.4.1` / source `.2` /24 |
 

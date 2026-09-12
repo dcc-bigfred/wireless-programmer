@@ -28,6 +28,9 @@ pub const MAX_FUNCTION: u8 = 0;
 /// Settings read endpoint.
 pub const SETTINGS_PATH: &str = "/api/v1/settings";
 
+/// Firmware POST cap — LongFred OTA slot (`ota_0` / `ota_1`).
+pub const MAX_FIRMWARE_BYTES: u64 = 0x3C_0000;
+
 /// Firmware upload endpoint (raw `.app.bin`).
 pub const FIRMWARE_PATH: &str = "/api/v1/firmware";
 

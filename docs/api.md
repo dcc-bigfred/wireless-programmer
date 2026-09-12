@@ -43,7 +43,10 @@ the response so callers can correlate requests without an explicit id.
 Returns the daemon version and the list of registered drivers with their
 capabilities (max roster slots, max function index, identity format,
 commissioning kind, optional Soft-AP `commissioningNet`, throttle-server
-support, firmware-update support).
+support, firmware-update support). When `supportsFirmwareUpdate` is true,
+`hello` also includes `maxFirmwareBytes`, `firmwareModes` (`ap` / `lan` /
+`usb`), and `firmwareRequireEspAppBin`. The daemon uses those fields instead
+of per-driver branches in shared job code.
 
 `version` is the release tag from the ELF section `.wireless-programmer.version`
 when the binary was published via the release workflow; otherwise the Cargo

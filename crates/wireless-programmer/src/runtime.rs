@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use wp_core::{
-    CommissioningNet, Observation, ProgramRequest, ProgressSink, RosterEntry, ThrottleServer,
-    Transport, WifiCredentials,
+    CommissioningNet, FirmwareReach, Observation, ProgramRequest, ProgressSink, RosterEntry,
+    ThrottleServer, Transport, WifiCredentials,
 };
 use wp_link::{BoundedHttpClient, Radio, ScanResult};
 use wp_proto::{ProgramRequestWire, ReachMode};
@@ -1115,6 +1115,15 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
     }
 }
 
+fn firmware_reach(mode: ReachMode) -> FirmwareReach {
+    match mode {
+        ReachMode::Ap => FirmwareReach::Ap,
+        ReachMode::Lan => FirmwareReach::Lan,
+        ReachMode::Usb => FirmwareReach::Usb,
+        ReachMode::Z21 => FirmwareReach::Unsupported,
+    }
+}
+
 async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob) {
     use std::net::Ipv4Addr;
 
@@ -1128,31 +1137,33 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         return;
     };
 
-    if driver == Driver::Rb23xx && job.mode != ReachMode::Ap {
+    let Some(fw) = rt.registry.capabilities(driver).firmware else {
         rt.jobs.transition(
             &id,
             JobState::Failed,
             None,
             None,
-            Some("RB23xx firmware update is Soft-AP only"),
+            Some("firmware update is not supported"),
+        );
+        return;
+    };
+    if !fw.allows(firmware_reach(job.mode)) {
+        rt.jobs.transition(
+            &id,
+            JobState::Failed,
+            None,
+            None,
+            Some(fw.mode_rejected_detail()),
         );
         return;
     }
 
-    let max_bytes = match driver {
-        Driver::Rb23xx => wp_drivers::rb23xx::MAX_FIRMWARE_BYTES,
-        _ => crate::jobs::MAX_FIRMWARE_BYTES,
-    };
     if job.mode != ReachMode::Usb {
         if let Ok(meta) = std::fs::metadata(&job.path) {
-            if meta.len() > max_bytes {
-                let detail = if driver == Driver::Rb23xx {
-                    "firmware image exceeds 5 MiB"
-                } else {
-                    "firmware image exceeds LongFred OTA slot (3.75 MiB)"
-                };
+            if meta.len() > fw.max_bytes {
+                let detail = fw.too_large_detail();
                 rt.jobs
-                    .transition(&id, JobState::Failed, None, None, Some(detail));
+                    .transition(&id, JobState::Failed, None, None, Some(&detail));
                 return;
             }
         }
@@ -1194,50 +1205,32 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
     };
 
     if job.mode != ReachMode::Usb {
-        match driver {
-            Driver::Rb23xx => {
-                if image.len() as u64 > wp_drivers::rb23xx::MAX_FIRMWARE_BYTES {
+        if image.len() as u64 > fw.max_bytes {
+            let detail = fw.too_large_detail();
+            rt.jobs
+                .transition(&id, JobState::Failed, None, None, Some(&detail));
+            return;
+        }
+        if fw.require_esp_app_bin {
+            let header_n = image.len().min(16);
+            match wp_link::classify_image(&job.path, &image[..header_n], image.len() as u64) {
+                Ok(wp_link::ImageKind::AppBin { .. }) => {}
+                Ok(_) => {
                     rt.jobs.transition(
                         &id,
                         JobState::Failed,
                         None,
                         None,
-                        Some("firmware image exceeds 5 MiB"),
+                        Some(
+                            "HTTP firmware needs a .app.bin ESP app image, not ELF or a merged dump",
+                        ),
                     );
                     return;
                 }
-            }
-            _ => {
-                if image.len() as u64 > crate::jobs::MAX_FIRMWARE_BYTES {
-                    rt.jobs.transition(
-                        &id,
-                        JobState::Failed,
-                        None,
-                        None,
-                        Some("firmware image exceeds LongFred OTA slot (3.75 MiB)"),
-                    );
+                Err(e) => {
+                    rt.jobs
+                        .transition(&id, JobState::Failed, None, None, Some(&e));
                     return;
-                }
-                let header_n = image.len().min(16);
-                match wp_link::classify_image(&job.path, &image[..header_n], image.len() as u64) {
-                    Ok(wp_link::ImageKind::AppBin { .. }) => {}
-                    Ok(_) => {
-                        rt.jobs.transition(
-                            &id,
-                            JobState::Failed,
-                            None,
-                            None,
-                            Some(
-                                "HTTP firmware needs a .app.bin ESP app image, not ELF or a merged dump",
-                            ),
-                        );
-                        return;
-                    }
-                    Err(e) => {
-                        rt.jobs
-                            .transition(&id, JobState::Failed, None, None, Some(&e));
-                        return;
-                    }
                 }
             }
         }
@@ -1459,7 +1452,11 @@ async fn firmware_http_with_heartbeats(
 ) -> Result<wp_core::Outcome, wp_core::DriverError> {
     let tokio_h = rt.handle();
     let registry = Arc::clone(&rt.registry);
-    let reset_ok = driver == Driver::Rb23xx;
+    let reset_ok = rt
+        .registry
+        .capabilities(driver)
+        .firmware
+        .is_some_and(|fw| fw.success_on_reset_after_write);
     let client = make_firmware_http_client(
         host,
         port,

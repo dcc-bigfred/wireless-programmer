@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Firmware job limits (max bytes, allowed reach modes, ESP `.app.bin`
+  requirement, RST-after-write) come from driver `capabilities.firmware`
+  instead of per-driver branches in shared runtime code.
 - LongFred Soft-AP commissioning addresses are now `192.168.4.1` / source
   `192.168.4.2` (ESP-IDF default, same as WiFred). This no longer overlaps
   the BigFred hub LAN (`192.168.0.0/24`). Requires matching LongFred

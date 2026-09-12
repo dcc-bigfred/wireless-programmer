@@ -14,12 +14,8 @@ use wp_proto::{ProgramRequestWire, ReachMode};
 /// Overall job deadline.
 pub const JOB_DEADLINE: Duration = Duration::from_secs(120);
 
-/// Firmware POST deadline (LongFred HTTP OTA and RB23xx `.bin` upload).
+/// Firmware POST deadline (HTTP OTA and RB23xx `.bin` upload).
 pub const FIRMWARE_DEADLINE: Duration = Duration::from_secs(120);
-
-/// LongFred OTA slot (`ota_0` / `ota_1`) — cap for images loaded into RAM.
-/// RB23xx uses [`wp_drivers::rb23xx::MAX_FIRMWARE_BYTES`] (5 MiB) instead.
-pub const MAX_FIRMWARE_BYTES: u64 = 0x3C_0000;
 
 /// Keep at most this many terminal jobs in the registry.
 const MAX_JOB_HISTORY: usize = 32;

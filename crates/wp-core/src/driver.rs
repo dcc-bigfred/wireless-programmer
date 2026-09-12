@@ -94,6 +94,10 @@ pub trait DeviceDriver {
     fn name(&self) -> &'static str;
 
     /// Capabilities advertised via `hello`.
+    ///
+    /// Firmware limits and allowed `updateFirmware` modes live on
+    /// [`DriverCapabilities::firmware`]; shared job code must read those
+    /// fields instead of matching on a driver id.
     fn capabilities(&self) -> DriverCapabilities;
 
     /// Filters applied to raw scan observations.

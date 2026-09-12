@@ -187,14 +187,19 @@ impl DriverRegistry {
         }
     }
 
-    /// Whether this driver can upload firmware over HTTP.
-    pub fn supports_firmware_update(&self, driver: Driver) -> bool {
+    /// Capabilities advertised via `hello` and used by shared job code.
+    pub fn capabilities(&self, driver: Driver) -> DriverCapabilities {
         match driver {
-            Driver::WiFred => self.wifred.capabilities().supports_firmware_update,
-            Driver::LongFred => self.longfred.capabilities().supports_firmware_update,
-            Driver::Fred => false,
-            Driver::Rb23xx => self.rb23xx.capabilities().supports_firmware_update,
+            Driver::WiFred => self.wifred.capabilities(),
+            Driver::LongFred => self.longfred.capabilities(),
+            Driver::Fred => self.fred.capabilities(),
+            Driver::Rb23xx => self.rb23xx.capabilities(),
         }
+    }
+
+    /// Whether this driver can upload firmware.
+    pub fn supports_firmware_update(&self, driver: Driver) -> bool {
+        self.capabilities(driver).firmware.is_some()
     }
 
     /// Upload firmware over the supplied transport.

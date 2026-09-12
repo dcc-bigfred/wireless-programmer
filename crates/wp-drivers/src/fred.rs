@@ -38,8 +38,8 @@ impl DeviceDriver for FredDriver {
             identity_format: IdentityFormat::Any,
             supports_throttle_server: false,
             commissioning: wp_core::CommissioningKind::Lan,
-            supports_firmware_update: false,
             commissioning_net: None,
+            firmware: None,
         }
     }
 

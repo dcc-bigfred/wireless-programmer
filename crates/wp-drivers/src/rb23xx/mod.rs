@@ -17,7 +17,8 @@ mod discovery;
 
 use wp_core::{
     CommissioningNet, DeviceCandidate, DeviceDriver, DriverCapabilities, DriverError, DriverId,
-    IdentityFormat, Observation, Outcome, ProgressSink, ScanFilters, Transport,
+    FirmwareCapabilities, FirmwareModes, IdentityFormat, Observation, Outcome, ProgressSink,
+    ScanFilters, Transport,
 };
 use wp_link::percent_encode;
 
@@ -58,12 +59,18 @@ impl DeviceDriver for Rb23xxDriver {
             identity_format: IdentityFormat::Any,
             supports_throttle_server: false,
             commissioning: wp_core::CommissioningKind::SoftAp,
-            supports_firmware_update: true,
             commissioning_net: Some(CommissioningNet {
                 host: CONFIG_HOST,
                 port: CONFIG_AP_PORT,
                 source: CONFIG_SOURCE,
                 prefix: CONFIG_PREFIX_LEN,
+            }),
+            firmware: Some(FirmwareCapabilities {
+                max_bytes: MAX_FIRMWARE_BYTES,
+                max_bytes_label: "5 MiB",
+                modes: FirmwareModes::AP,
+                require_esp_app_bin: false,
+                success_on_reset_after_write: true,
             }),
         }
     }

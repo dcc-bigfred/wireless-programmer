@@ -39,6 +39,9 @@ Candidate identity: SSID prefix `longfred_prog`, stable key = BSSID.
 | `identityFormat`         | `Alphanumeric { max_len: 16 }`     |
 | `supportsThrottleServer` | true (field accepted, unused)      |
 | `supportsFirmwareUpdate` | true                               |
+| `maxFirmwareBytes`       | 3.75 MiB (`0x3C0000`)              |
+| `firmwareModes`          | `ap`, `lan`, `usb`                 |
+| `firmwareRequireEspAppBin` | true                             |
 | `commissioning`          | `SoftAp`                           |
 | `commissioningNet`       | `192.168.4.1` / source `.2` /24    |
 
