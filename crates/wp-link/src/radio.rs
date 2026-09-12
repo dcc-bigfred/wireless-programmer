@@ -10,6 +10,7 @@
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use wp_core::DriverError;
 
@@ -247,6 +248,10 @@ pub struct Nl80211Radio {
     /// Fib-rule exception installed by [`Radio::prepare_softap`], removed on
     /// [`Radio::release`].
     policy: Option<crate::netcfg::PolicyRoute>,
+    /// `wpa_supplicant` child spawned as a fallback when nl80211 CONNECT
+    /// with a PMK does not produce carrier (e.g. brcmfmac on Pi 5 does not
+    /// offload the 4-way handshake). Killed on [`Radio::release`].
+    supplicant: Arc<std::sync::Mutex<Option<std::process::Child>>>,
 }
 
 /// Hard cap on waiting for `NEW_SCAN_RESULTS` after TRIGGER_SCAN.
@@ -393,13 +398,17 @@ async fn connect_once(
 }
 
 /// Bring the link up, CONNECT, wait for carrier; rescan and retry once.
+/// When a PSK is supplied and nl80211 CONNECT does not produce carrier
+/// (e.g. brcmfmac on Pi 5 does not offload the 4-way handshake), spawn
+/// `wpa_supplicant` on the interface as a fallback. The returned child
+/// must be killed by the caller on `release`.
 async fn associate(
     iface: String,
     if_index: u32,
     ssid: String,
     bssid: Option<[u8; 6]>,
     psk: Option<String>,
-) -> Result<(), DriverError> {
+) -> Result<Option<std::process::Child>, DriverError> {
     // `release` puts the link down, so without this a second job
     // would try to associate on a down interface and silently fail.
     set_link_up(if_index).await?;
@@ -421,7 +430,7 @@ async fn associate(
             log::debug!("connect: CONNECT accepted for {ssid}");
             if wait_associated(&iface, ASSOCIATE_DEADLINE).await {
                 tokio::time::sleep(ASSOCIATE_SETTLE).await;
-                return Ok(());
+                return Ok(None);
             }
             log::warn!("connect: {ssid} accepted but never gained carrier");
         }
@@ -450,10 +459,110 @@ async fn associate(
             iface_operstate(&iface),
             iface_carrier(&iface)
         );
+        // Last resort: spawn wpa_supplicant on the programming interface.
+        // brcmfmac (Pi 5) does not offload the 4-way handshake from a PMK
+        // passed via nl80211 CONNECT, so the kernel never reaches carrier.
+        // wpa_supplicant runs in the foreground; the caller kills it on
+        // release so the radio is freed for the next job.
+        if let Some(ref passphrase) = psk {
+            log::info!("connect: {ssid} nl80211 CONNECT did not produce carrier; trying wpa_supplicant fallback");
+            let child = spawn_wpa_supplicant(&iface, &ssid, passphrase).await?;
+            log::info!("connect: {ssid} associated via wpa_supplicant");
+            return Ok(Some(child));
+        }
         return Err(DriverError::AssociationTimedOut);
     }
     tokio::time::sleep(ASSOCIATE_SETTLE).await;
-    Ok(())
+    Ok(None)
+}
+
+/// Spawn `wpa_supplicant` on `iface` with a minimal config for `ssid`/`psk`,
+/// then wait for carrier. Returns the running child so the caller can kill it
+/// on `release`. The config file is written to a per-SSID temp directory and
+/// removed when the child is killed.
+async fn spawn_wpa_supplicant(
+    iface: &str,
+    ssid: &str,
+    psk: &str,
+) -> Result<std::process::Child, DriverError> {
+    // Disconnect via nl80211 first so the interface is not in a connecting
+    // state when wpa_supplicant takes over.
+    if let Ok((connection, handle, _)) = wl_nl80211::new_connection() {
+        tokio::spawn(connection);
+        use wl_nl80211::Nl80211Disconnect;
+        let attrs = Nl80211Disconnect::new(iface_to_index(iface).unwrap_or(0)).build();
+        let mut stream = handle.connection().disconnect(attrs).execute().await;
+        use futures::stream::TryStreamExt;
+        let _ = stream.try_next().await;
+    }
+
+    let dir = std::env::temp_dir().join(format!("wp-wpa-{}", sanitize(ssid)));
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| DriverError::Other(format!("wpa_supplicant temp dir: {e}")))?;
+    let conf_path = dir.join("wpa_supplicant.conf");
+    let config = format!(
+        "ctrl_interface=/dev/null\n\
+         network={{\n  ssid=\"{ssid}\"\n  psk=\"{psk}\"\n}}\n"
+    );
+    std::fs::write(&conf_path, &config)
+        .map_err(|e| DriverError::Other(format!("wpa_supplicant config: {e}")))?;
+
+    log::info!("wpa_supplicant: spawning on {iface} for {ssid}");
+    let mut child = std::process::Command::new("wpa_supplicant")
+        .args([
+            "-i",
+            iface,
+            "-c",
+            conf_path.to_str().unwrap_or("wpa_supplicant.conf"),
+            "-C",
+            dir.join("ctrl").to_str().unwrap_or("/tmp/wp-wpa-ctrl"),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| DriverError::Other(format!("spawn wpa_supplicant: {e}")))?;
+
+    // Wait for carrier (reuse the nl80211 deadline).
+    let deadline = ASSOCIATE_DEADLINE;
+    let start = std::time::Instant::now();
+    loop {
+        if iface_carrier(iface).is_some() {
+            tokio::time::sleep(ASSOCIATE_SETTLE).await;
+            return Ok(child);
+        }
+        if start.elapsed() >= deadline {
+            log::warn!(
+                "wpa_supplicant: {ssid} no carrier after {:?}, killing",
+                deadline
+            );
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_dir_all(&dir);
+            return Err(DriverError::AssociationTimedOut);
+        }
+        tokio::time::sleep(ASSOCIATE_POLL).await;
+    }
+}
+
+/// Replace characters that are not safe in a path component with `_`.
+fn sanitize(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Look up an interface index by name via `/sys/class/net`.
+fn iface_to_index(iface: &str) -> Option<u32> {
+    let path = format!("/sys/class/net/{iface}/ifindex");
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
 }
 
 fn log_rfkill() {
@@ -679,6 +788,7 @@ impl Nl80211Radio {
             saved_conf: crate::netcfg::SavedConf::default(),
             assigned: None,
             policy: None,
+            supplicant: Arc::new(std::sync::Mutex::new(None)),
         })
     }
 
@@ -704,7 +814,10 @@ impl Radio for Nl80211Radio {
         let if_index = self.if_index;
         let iface = self.iface.clone();
         let ssid = ssid.to_string();
-        Box::pin(async move { associate(iface, if_index, ssid, bssid, None).await })
+        Box::pin(async move {
+            associate(iface, if_index, ssid, bssid, None).await?;
+            Ok(())
+        })
     }
 
     fn connect_psk(&mut self, ssid: &str, bssid: Option<[u8; 6]>, psk: &str) -> RadioFut<'_, ()> {
@@ -712,7 +825,14 @@ impl Radio for Nl80211Radio {
         let iface = self.iface.clone();
         let ssid = ssid.to_string();
         let psk = psk.to_string();
-        Box::pin(async move { associate(iface, if_index, ssid, bssid, Some(psk)).await })
+        let supplicant = Arc::clone(&self.supplicant);
+        Box::pin(async move {
+            let child = associate(iface, if_index, ssid, bssid, Some(psk)).await?;
+            if let Some(child) = child {
+                *supplicant.lock().unwrap() = Some(child);
+            }
+            Ok(())
+        })
     }
 
     fn set_address(&mut self, addr: std::net::Ipv4Addr, prefix_len: u8) -> RadioFut<'_, ()> {
@@ -777,9 +897,19 @@ impl Radio for Nl80211Radio {
         let iface = self.iface.clone();
         let assigned = self.assigned.take();
         let policy = self.policy.take();
+        let supplicant = self.supplicant.lock().unwrap().take();
         crate::netcfg::restore(&self.saved_conf);
         self.saved_conf = crate::netcfg::SavedConf::default();
         Box::pin(async move {
+            // Kill the wpa_supplicant fallback first so it does not fight
+            // the nl80211 DISCONNECT below.
+            if let Some(mut child) = supplicant {
+                log::debug!("release: killing wpa_supplicant pid={}", child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                let dir = std::env::temp_dir().join(format!("wp-wpa-{}", sanitize(&iface)));
+                let _ = std::fs::remove_dir_all(&dir);
+            }
             if let Some(ref route) = policy {
                 crate::netcfg::remove_policy_route(route);
             }

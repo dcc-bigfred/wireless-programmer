@@ -114,19 +114,6 @@ impl From<IdentityFormat> for IdentityFormatWire {
     }
 }
 
-/// Reach path for `updateFirmware`, independent of the IPC `ReachMode` tag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FirmwareReach {
-    /// Soft-AP HTTP upload.
-    Ap,
-    /// Layout LAN HTTP upload.
-    Lan,
-    /// USB serial (`espflash`).
-    Usb,
-    /// Not a firmware path (e.g. Z21).
-    Unsupported,
-}
-
 /// Which `updateFirmware` reach paths a driver accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FirmwareModes {
@@ -153,14 +140,15 @@ impl FirmwareModes {
         usb: true,
     };
 
-    /// Whether `reach` is an accepted firmware path.
+    /// Whether `mode` is an accepted firmware path. `Z21` is never a firmware
+    /// path; drivers that do not support a mode simply leave it `false`.
     #[must_use]
-    pub fn allows(self, reach: FirmwareReach) -> bool {
-        match reach {
-            FirmwareReach::Ap => self.ap,
-            FirmwareReach::Lan => self.lan,
-            FirmwareReach::Usb => self.usb,
-            FirmwareReach::Unsupported => false,
+    pub fn allows(self, mode: ReachMode) -> bool {
+        match mode {
+            ReachMode::Ap => self.ap,
+            ReachMode::Lan => self.lan,
+            ReachMode::Usb => self.usb,
+            ReachMode::Z21 => false,
         }
     }
 
@@ -197,10 +185,10 @@ pub struct FirmwareCapabilities {
 }
 
 impl FirmwareCapabilities {
-    /// Whether `reach` is an accepted firmware path.
+    /// Whether `mode` is an accepted firmware path.
     #[must_use]
-    pub fn allows(self, reach: FirmwareReach) -> bool {
-        self.modes.allows(reach)
+    pub fn allows(self, mode: ReachMode) -> bool {
+        self.modes.allows(mode)
     }
 
     /// Error detail when the image is larger than [`Self::max_bytes`].
@@ -236,6 +224,10 @@ pub struct DriverCapabilities {
     /// Soft-AP addressing for commissioning, when the driver does not use the
     /// daemon's historical `192.168.4.x` defaults.
     pub commissioning_net: Option<CommissioningNet>,
+    /// WPA2-PSK passphrase for the device Soft-AP, when it is not open.
+    /// These are publicly documented factory default passwords for a
+    /// temporary commissioning AP, not secrets.
+    pub softap_psk: Option<&'static str>,
     /// Firmware-upload policy, when the driver supports `updateFirmware`.
     pub firmware: Option<FirmwareCapabilities>,
 }
@@ -302,11 +294,12 @@ mod tests {
 
     #[test]
     fn firmware_modes_ap_only_rejects_lan_and_usb() {
+        use wp_proto::ReachMode;
         let modes = FirmwareModes::AP;
-        assert!(modes.allows(FirmwareReach::Ap));
-        assert!(!modes.allows(FirmwareReach::Lan));
-        assert!(!modes.allows(FirmwareReach::Usb));
-        assert!(!modes.allows(FirmwareReach::Unsupported));
+        assert!(modes.allows(ReachMode::Ap));
+        assert!(!modes.allows(ReachMode::Lan));
+        assert!(!modes.allows(ReachMode::Usb));
+        assert!(!modes.allows(ReachMode::Z21));
     }
 
     #[test]
@@ -322,6 +315,7 @@ mod tests {
             supports_throttle_server: false,
             commissioning: CommissioningKind::SoftAp,
             commissioning_net: None,
+            softap_psk: Some("000000000"),
             firmware: Some(fw),
         });
         assert!(wire.supports_firmware_update);
@@ -339,6 +333,7 @@ mod tests {
             supports_throttle_server: true,
             commissioning: CommissioningKind::SoftAp,
             commissioning_net: None,
+            softap_psk: None,
             firmware: None,
         });
         assert!(!wire.supports_firmware_update);

@@ -39,6 +39,7 @@ impl DeviceDriver for FredDriver {
             supports_throttle_server: false,
             commissioning: wp_core::CommissioningKind::Lan,
             commissioning_net: None,
+            softap_psk: None,
             firmware: None,
         }
     }
@@ -80,6 +81,18 @@ impl DeviceDriver for FredDriver {
     ) -> Result<Outcome, DriverError> {
         Err(DriverError::Other(
             "fred programming uses Z21 UDP, not HTTP/serial".into(),
+        ))
+    }
+
+    async fn update_firmware(
+        &self,
+        _transport: Transport<'_>,
+        _image: &[u8],
+        _filename: &str,
+        _progress: &mut dyn ProgressSink,
+    ) -> Result<Outcome, DriverError> {
+        Err(DriverError::Other(
+            "firmware update is not supported".into(),
         ))
     }
 }

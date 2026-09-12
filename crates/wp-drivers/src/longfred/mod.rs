@@ -70,6 +70,7 @@ impl DeviceDriver for LongFredDriver {
                 source: CONFIG_SOURCE,
                 prefix: CONFIG_PREFIX_LEN,
             }),
+            softap_psk: None,
             firmware: Some(FirmwareCapabilities {
                 max_bytes: MAX_FIRMWARE_BYTES,
                 max_bytes_label: "LongFred OTA slot (3.75 MiB)",
@@ -138,18 +139,12 @@ impl DeviceDriver for LongFredDriver {
             mismatches: Vec::new(),
         })
     }
-}
 
-impl LongFredDriver {
-    /// Stream an ESP32-C6 app image to `POST /api/v1/firmware`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DriverError`] when the HTTP POST fails.
-    pub async fn update_firmware(
+    async fn update_firmware(
         &self,
         transport: Transport<'_>,
         image: &[u8],
+        _filename: &str,
         progress: &mut dyn ProgressSink,
     ) -> Result<Outcome, DriverError> {
         let client = http_client(transport)?;

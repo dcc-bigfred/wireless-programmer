@@ -186,7 +186,7 @@ async fn update_firmware_posts_app_image() {
     let mut progress = wp_core::NoProgress;
     let transport = Transport::Http(&mut fake);
     let outcome = LongFredDriver::new()
-        .update_firmware(transport, &image, &mut progress)
+        .update_firmware(transport, &image, "firmware.app.bin", &mut progress)
         .await
         .expect("firmware");
     assert!(outcome.restarted);

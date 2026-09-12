@@ -18,8 +18,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Firmware job limits (max bytes, allowed reach modes, ESP `.app.bin`
-  requirement, RST-after-write) come from driver `capabilities.firmware`
-  instead of per-driver branches in shared runtime code.
+  requirement, RST-after-write) and Soft-AP PSK come from driver
+  `capabilities` instead of per-driver branches in shared runtime code.
+- `update_firmware` is now a `DeviceDriver` trait method (uniform
+  `filename` parameter); the registry no longer manually dispatches with
+  per-driver signatures.
+- WPA2-PSK join falls back to `wpa_supplicant` on the programming
+  interface when nl80211 CONNECT with a PMK does not produce carrier
+  (brcmfmac on Pi 5 does not offload the 4-way handshake). The supplicant
+  is killed on radio release.
 - LongFred Soft-AP commissioning addresses are now `192.168.4.1` / source
   `192.168.4.2` (ESP-IDF default, same as WiFred). This no longer overlaps
   the BigFred hub LAN (`192.168.0.0/24`). Requires matching LongFred

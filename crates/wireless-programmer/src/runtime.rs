@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use parking_lot::Mutex;
 use wp_core::{
-    CommissioningNet, FirmwareReach, Observation, ProgramRequest, ProgressSink, RosterEntry,
-    ThrottleServer, Transport, WifiCredentials,
+    CommissioningNet, Observation, ProgramRequest, ProgressSink, RosterEntry, ThrottleServer,
+    Transport, WifiCredentials,
 };
 use wp_link::{BoundedHttpClient, Radio, ScanResult};
 use wp_proto::{ProgramRequestWire, ReachMode};
@@ -422,8 +422,13 @@ impl Runtime {
         self.rt.handle().block_on(async move {
             let mut r = radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            if let Err(e) =
-                radio_join(r.as_mut(), &candidate.ssid, bssid, driver.softap_psk()).await
+            if let Err(e) = radio_join(
+                r.as_mut(),
+                &candidate.ssid,
+                bssid,
+                registry.capabilities(driver).softap_psk,
+            )
+            .await
             {
                 tracing::warn!(
                     ssid = %candidate.ssid,
@@ -472,7 +477,13 @@ impl Runtime {
         self.rt.handle().block_on(async move {
             let mut r = radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            radio_join(r.as_mut(), &candidate.ssid, bssid, driver.softap_psk()).await?;
+            radio_join(
+                r.as_mut(),
+                &candidate.ssid,
+                bssid,
+                registry.capabilities(driver).softap_psk,
+            )
+            .await?;
             r.set_address(net.source, net.prefix).await?;
             r.link_up().await?;
             r.prepare_softap(net.source, net.host).await?;
@@ -955,7 +966,14 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
         bssid = ?candidate.bssid,
         "connecting to Soft-AP"
     );
-    if let Err(e) = radio_join(radio.as_mut(), &candidate.ssid, bssid, driver.softap_psk()).await {
+    if let Err(e) = radio_join(
+        radio.as_mut(),
+        &candidate.ssid,
+        bssid,
+        rt.registry.capabilities(driver).softap_psk,
+    )
+    .await
+    {
         tracing::warn!(
             job_id = %id.0,
             ssid = %candidate.ssid,
@@ -1115,15 +1133,6 @@ async fn run_program_job(rt: &Runtime, id: JobId, wire: ProgramRequestWire) {
     }
 }
 
-fn firmware_reach(mode: ReachMode) -> FirmwareReach {
-    match mode {
-        ReachMode::Ap => FirmwareReach::Ap,
-        ReachMode::Lan => FirmwareReach::Lan,
-        ReachMode::Usb => FirmwareReach::Usb,
-        ReachMode::Z21 => FirmwareReach::Unsupported,
-    }
-}
-
 async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob) {
     use std::net::Ipv4Addr;
 
@@ -1147,7 +1156,7 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
         );
         return;
     };
-    if !fw.allows(firmware_reach(job.mode)) {
+    if !fw.allows(job.mode) {
         rt.jobs.transition(
             &id,
             JobState::Failed,
@@ -1360,8 +1369,13 @@ async fn run_firmware_job(rt: &Runtime, id: JobId, job: crate::jobs::FirmwareJob
             let _hold = RadioHold::new(rt);
             let mut radio = rt.radio.lock().await;
             let bssid = parse_bssid(candidate.bssid.as_deref());
-            if let Err(e) =
-                radio_join(radio.as_mut(), &candidate.ssid, bssid, driver.softap_psk()).await
+            if let Err(e) = radio_join(
+                radio.as_mut(),
+                &candidate.ssid,
+                bssid,
+                rt.registry.capabilities(driver).softap_psk,
+            )
+            .await
             {
                 rt.jobs.transition(
                     &id,

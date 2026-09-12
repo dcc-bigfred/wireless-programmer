@@ -65,6 +65,7 @@ impl DeviceDriver for Rb23xxDriver {
                 source: CONFIG_SOURCE,
                 prefix: CONFIG_PREFIX_LEN,
             }),
+            softap_psk: Some(SOFTAP_PSK),
             firmware: Some(FirmwareCapabilities {
                 max_bytes: MAX_FIRMWARE_BYTES,
                 max_bytes_label: "5 MiB",
@@ -113,19 +114,8 @@ impl DeviceDriver for Rb23xxDriver {
             "rb23xx does not support program; use updateFirmware to upload a .bin".into(),
         ))
     }
-}
 
-impl Rb23xxDriver {
-    /// POST a firmware `.bin` to the decoder file browser.
-    ///
-    /// `filename` is the basename placed in `/?p=/{filename}`. The HTTP client
-    /// should treat a TCP reset after a full write as success (decoder reboot).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DriverError`] when the HTTP POST fails for a reason other
-    /// than a post-write connection reset.
-    pub async fn update_firmware(
+    async fn update_firmware(
         &self,
         transport: Transport<'_>,
         image: &[u8],

@@ -65,17 +65,6 @@ impl Driver {
         }
     }
 
-    /// WPA2-PSK for the device Soft-AP, when it is not open.
-    ///
-    /// The passphrase is never logged and is not advertised on `hello`.
-    #[must_use]
-    pub fn softap_psk(self) -> Option<&'static str> {
-        match self {
-            Driver::Rb23xx => Some(wp_drivers::rb23xx::SOFTAP_PSK),
-            Driver::WiFred | Driver::LongFred | Driver::Fred => None,
-        }
-    }
-
     /// Parse a driver id string.
     pub fn from_id(id: &str) -> Option<Self> {
         match id {
@@ -212,17 +201,21 @@ impl DriverRegistry {
         progress: &mut dyn ProgressSink,
     ) -> Result<Outcome, DriverError> {
         match driver {
-            Driver::WiFred => Err(DriverError::Other(
-                "firmware update is not supported".into(),
-            )),
-            Driver::LongFred => {
-                self.longfred
-                    .update_firmware(transport, image, progress)
+            Driver::WiFred => {
+                self.wifred
+                    .update_firmware(transport, image, filename, progress)
                     .await
             }
-            Driver::Fred => Err(DriverError::Other(
-                "firmware update is not supported".into(),
-            )),
+            Driver::LongFred => {
+                self.longfred
+                    .update_firmware(transport, image, filename, progress)
+                    .await
+            }
+            Driver::Fred => {
+                self.fred
+                    .update_firmware(transport, image, filename, progress)
+                    .await
+            }
             Driver::Rb23xx => {
                 self.rb23xx
                     .update_firmware(transport, image, filename, progress)

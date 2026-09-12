@@ -19,7 +19,7 @@ mod transport;
 
 pub use capabilities::{
     CommissioningKind, CommissioningNet, DriverCapabilities, DriverId, FirmwareCapabilities,
-    FirmwareModes, FirmwareReach, IdentityFormat,
+    FirmwareModes, IdentityFormat,
 };
 pub use driver::{
     validate_common, DeviceCandidate, DeviceDriver, NoProgress, Observation, Outcome, ProgressSink,
