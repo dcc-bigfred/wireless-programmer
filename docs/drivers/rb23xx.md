@@ -8,10 +8,10 @@ sound decoders in Wi-Fi file-browser mode.
 With **F28** on, the decoder raises a **WPA2-PSK** Soft-AP named
 `RB2300_XXXXX` (also `RB2310_` / `RB2302_`). The factory password
 `00000000` is a publicly documented default for a temporary commissioning
-AP, not a secret. The AP uses `192.168.4.1/24`. The daemon
-assigns `192.168.4.2/24` on the wireless interface (**no default route**),
-hands a sync `HttpClient` to the driver, and releases the radio on every
-exit path.
+AP, not a secret. The AP uses `192.168.4.1/24`. The daemon assigns `192.168.4.2/24` with
+`IFA_F_NOPREFIXROUTE` (no connected `192.168.4.0/24` in `main`) and a host
+`/32` to `.1` via the wireless interface, hands a sync `HttpClient` to the
+driver, and releases the radio on every exit path.
 
 | Field    | Value          |
 |----------|----------------|

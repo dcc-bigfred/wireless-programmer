@@ -1,11 +1,14 @@
 //! Interface-scoped IPv4 settings needed when a device Soft-AP shares a
 //! subnet with the hub's own LAN.
 //!
-//! Historically the LongFred Soft-AP served `192.168.0.1/24`, the same
-//! address as the BigFred hub LAN. Current LongFred firmware uses
-//! `192.168.4.1/24` (no overlap). The helpers below still apply whenever
-//! `host` is a locally-owned address — three kernel behaviours then break
-//! the HTTP conversation:
+//! [`set_address`](crate::radio::Radio::set_address) assigns `source/prefix`
+//! with `IFA_F_NOPREFIXROUTE`, so the kernel does **not** install a connected
+//! subnet in `main`. [`install_policy_route`] then adds a host `/32` to
+//! `host` in table 100, matched by `from <source> to <host> lookup 100`.
+//! That is the only IPv4 path out the wireless interface.
+//!
+//! The helpers below still apply whenever `host` is a locally-owned
+//! address — three kernel behaviours then break the HTTP conversation:
 //!
 //! 1. **Outbound SYN** — a route lookup for the Soft-AP IP hits the `local`
 //!    table first (pref 0) and delivers to loopback. `SO_BINDTODEVICE` does
@@ -158,8 +161,11 @@ fn is_exists(e: &io::Error) -> bool {
     msg.contains("exists") || msg.contains("File exists") || msg.contains("error -17")
 }
 
-/// Install a policy route so packets from `source` to `host` go via `device`,
-/// even when `host` is a local address or the default gateway.
+/// Install a host `/32` so packets from `source` to `host` go via `device`.
+///
+/// Combined with `IFA_F_NOPREFIXROUTE` on the assigned address, this is the
+/// only route that steers traffic onto the wireless interface. Also works
+/// when `host` is a local address.
 ///
 /// `FRA_PRIORITY` is an unsigned `u32`; there is no way to insert a rule
 /// *before* `lookup local` at pref 0 other than moving that rule to a later

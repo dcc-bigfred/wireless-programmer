@@ -18,7 +18,7 @@ pub const CONFIG_AP_PORT: u16 = 80;
 pub const CONFIG_HOST: &str = "192.168.4.1";
 
 /// Source address the daemon assigns to the wireless interface. Stays inside
-/// the AP's `/24` and never gets a default route.
+/// the AP's `/24`; the prefix route is suppressed (`IFA_F_NOPREFIXROUTE`).
 pub const CONFIG_SOURCE_ADDR: &str = "192.168.4.2";
 
 /// On-link prefix length for the config AP subnet.

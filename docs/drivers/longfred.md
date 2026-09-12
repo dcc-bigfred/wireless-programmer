@@ -19,9 +19,10 @@ source address `.2` is **outside** that pool. The driver advertises this via
 | `source` | `192.168.4.2`  |
 | `prefix` | `24`           |
 
-The daemon should associate to the open AP, assign `192.168.4.2/24` on the
-wireless interface (**no default route**), hand a sync `HttpClient` to the
-driver, and release the radio on every exit path.
+The daemon should associate to the open AP, assign `192.168.4.2/24` with
+`IFA_F_NOPREFIXROUTE` (no connected subnet in `main`) and a host `/32` to
+`.1`, hand a sync `HttpClient` to the driver, and release the radio on every
+exit path.
 
 This subnet does **not** overlap the BigFred hub LAN (`192.168.0.0/24`), so
 the `wp_link::netcfg` policy-route path for a locally-owned destination is

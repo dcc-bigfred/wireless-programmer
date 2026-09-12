@@ -16,8 +16,9 @@ The AP runs a web server on port 80 with a built-in DHCP server at
 `softAPConfig`). The daemon:
 
 1. associates to the open AP via nl80211 (`OpenSystem`, no PSK),
-2. assigns itself `192.168.4.2/24` on the wireless interface — **no default
-   route**, so the hub's Ethernet default gateway is never hijacked,
+2. assigns itself `192.168.4.2/24` with `IFA_F_NOPREFIXROUTE` (no connected
+   `192.168.4.0/24` in `main`) and a host `/32` to `192.168.4.1`, so the hub
+   Ethernet default gateway is never hijacked,
 3. hands a sync `HttpClient` to the driver,
 4. on every exit path (success or failure) disconnects and releases the
    radio.

@@ -95,7 +95,8 @@ pub struct CommissioningNetWire {
     pub port: u16,
     /// Address the hub should assign on the wireless interface.
     pub source: String,
-    /// Prefix length for the on-link route.
+    /// Prefix length of the assigned address. The connected prefix route is
+    /// suppressed.
     pub prefix: u8,
 }
 

@@ -51,7 +51,9 @@ pub struct CommissioningNet {
     pub port: u16,
     /// Address the hub assigns on the wireless interface (e.g. `192.168.4.2`).
     pub source: Ipv4Addr,
-    /// Prefix length for the on-link route (typically 24).
+    /// Prefix length of the assigned address (typically 24). The kernel
+    /// prefix route is suppressed; only a `/32` to [`Self::host`] is
+    /// installed.
     pub prefix: u8,
 }
 

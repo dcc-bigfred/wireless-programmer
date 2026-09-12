@@ -1,10 +1,11 @@
 //! Radio control: nl80211 scan/connect + rtnetlink addressing.
 //!
 //! The daemon owns the radio. It associates to a device AP (open, or
-//! WPA2-PSK when the driver supplies a passphrase), assigns an on-link
-//! address with **no default route** (so the hub's Ethernet default gateway
-//! is never hijacked), then hands a sync [`wp_core::HttpClient`] to the
-//! driver. On every exit path the radio is released: disconnect and address
+//! WPA2-PSK when the driver supplies a passphrase), assigns `source/prefix`
+//! with `IFA_F_NOPREFIXROUTE` (no default route and no connected subnet in
+//! `main`), then [`Radio::prepare_softap`] installs a host `/32` to the
+//! device so the hub Ethernet gateway and overlapping LAN routes stay
+//! intact. On every exit path the radio is released: disconnect and address
 //! removal.
 
 use std::future::Future;
@@ -56,7 +57,12 @@ pub trait Radio: Send {
     /// Associate to a WPA2-PSK AP. The passphrase is never logged.
     fn connect_psk(&mut self, ssid: &str, bssid: Option<[u8; 6]>, psk: &str) -> RadioFut<'_, ()>;
 
-    /// Assign `addr/prefix_len` to the wireless interface (on-link route only).
+    /// Assign `addr/prefix_len` without a connected prefix route.
+    ///
+    /// The address keeps its prefix (typically `/24`) so userspace still
+    /// sees the Soft-AP netmask, but `IFA_F_NOPREFIXROUTE` stops the kernel
+    /// from installing `source/prefix` in `main`. Reachability is only the
+    /// host `/32` added later by [`Radio::prepare_softap`].
     fn set_address(&mut self, addr: std::net::Ipv4Addr, prefix_len: u8) -> RadioFut<'_, ()>;
 
     /// Bring the link up.
@@ -65,11 +71,10 @@ pub trait Radio: Send {
     /// Disconnect and remove the assigned address, releasing the radio.
     fn release(&mut self) -> RadioFut<'_, ()>;
 
-    /// Apply Soft-AP sysctls and policy routing for the device subnet.
+    /// Apply Soft-AP sysctls and a host `/32` policy route to `host`.
     ///
-    /// Called after [`set_address`] when the device address may collide
-    /// with a local address on another interface. The radio restores
-    /// everything in [`release`]. Default is a no-op (mock radios).
+    /// Called after [`set_address`]. The radio restores everything in
+    /// [`release`]. Default is a no-op (mock radios).
     fn prepare_softap(
         &mut self,
         _source: std::net::Ipv4Addr,
@@ -243,9 +248,9 @@ pub struct Nl80211Radio {
     /// [`Radio::release`]. See [`crate::netcfg`].
     saved_conf: crate::netcfg::SavedConf,
     /// Address assigned by [`Radio::set_address`], removed on
-    /// [`Radio::release`]. A leftover address keeps an on-link route for the
-    /// device subnet, which competes with the hub's own LAN when the two
-    /// collide.
+    /// [`Radio::release`]. A leftover address without `IFA_F_NOPREFIXROUTE`
+    /// would keep a connected subnet route that competes with other
+    /// interfaces.
     assigned: Option<(std::net::Ipv4Addr, u8)>,
     /// Fib-rule exception installed by [`Radio::prepare_softap`], removed on
     /// [`Radio::release`].
@@ -934,31 +939,29 @@ impl Radio for Nl80211Radio {
         self.assigned = Some((addr, prefix_len));
         Box::pin(async move {
             use rtnetlink::new_connection;
+            use rtnetlink::packet_route::address::{AddressAttribute, AddressFlags};
 
             let (connection, handle, _) = new_connection()
                 .map_err(|e| DriverError::Other(format!("rtnetlink connection: {e}")))?;
             tokio::spawn(connection);
 
-            let result = handle
+            // Drop a leftover assignment first: replacing in place does not
+            // always remove a previously installed prefix route from `main`.
+            remove_address(&handle, if_index, &iface, addr, prefix_len).await;
+
+            let mut req = handle
                 .address()
-                .add(if_index, std::net::IpAddr::V4(addr), prefix_len)
+                .add(if_index, std::net::IpAddr::V4(addr), prefix_len);
+            req.message_mut()
+                .attributes
+                .push(AddressAttribute::Flags(AddressFlags::Noprefixroute));
+            let result = req
                 .execute()
                 .await
-                .or_else(|e| {
-                    let msg = e.to_string();
-                    if msg.contains("exists")
-                        || msg.contains("EEXIST")
-                        || msg.contains("File exists")
-                    {
-                        log::debug!("address {addr}/{prefix_len} already on {iface}");
-                        Ok(())
-                    } else {
-                        Err(DriverError::Other(format!("address add: {e}")))
-                    }
-                });
+                .map_err(|e| DriverError::Other(format!("address add: {e}")));
             if result.is_ok() {
                 log::debug!(
-                    "address {addr}/{prefix_len} on {iface} (up={} operstate={} accept_local={:?} rp_filter={:?})",
+                    "address {addr}/{prefix_len} noprefixroute on {iface} (up={} operstate={} accept_local={:?} rp_filter={:?})",
                     iface_is_up(&iface),
                     iface_operstate(&iface),
                     crate::netcfg::read_conf(&iface, "accept_local"),
@@ -1020,9 +1023,7 @@ impl Radio for Nl80211Radio {
             use rtnetlink::{new_connection, LinkUnspec};
             if let Ok((connection, handle, _)) = new_connection() {
                 tokio::spawn(connection);
-                // The kernel does not always drop the address on disconnect,
-                // and a leftover on-link route for the device subnet competes
-                // with the hub's own LAN when the two collide.
+                // The kernel does not always drop the address on disconnect.
                 if let Some((addr, prefix_len)) = assigned {
                     remove_address(&handle, if_index, &iface, addr, prefix_len).await;
                 }

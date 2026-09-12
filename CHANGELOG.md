@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `192.168.4.2` (ESP-IDF default, same as WiFred). This no longer overlaps
   the BigFred hub LAN (`192.168.0.0/24`). Requires matching LongFred
   firmware; older devices at `192.168.0.1` will not program.
+- Soft-AP `source/prefix` is assigned with `IFA_F_NOPREFIXROUTE`. The
+  kernel does not install a connected subnet in `main`; only the existing
+  policy `/32` to `host` leaves via the wireless interface.
 
 ## [v0.2] — 2026-08-22
 
