@@ -637,9 +637,8 @@ fn decode_chunked(body: &[u8]) -> io::Result<Vec<u8>> {
         let size_txt = std::str::from_utf8(size_s)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
             .trim();
-        let size = usize::from_str_radix(size_txt, 16).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("chunk size: {e}"))
-        })?;
+        let size = usize::from_str_radix(size_txt, 16)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("chunk size: {e}")))?;
         pos = nl + 2;
         if size == 0 {
             return Ok(out);
@@ -729,15 +728,18 @@ fn arp_row(dst: Ipv4Addr, dev: Option<&str>) -> Option<(String, String, String)>
                 continue;
             }
         }
-        return Some((cols[2].to_string(), cols[3].to_string(), cols[5].to_string()));
+        return Some((
+            cols[2].to_string(),
+            cols[3].to_string(),
+            cols[5].to_string(),
+        ));
     }
     None
 }
 
 fn arp_complete(dst: Ipv4Addr, dev: Option<&str>) -> bool {
-    arp_row(dst, dev).is_some_and(|(flags, mac, _)| {
-        flags.contains('2') && mac != "00:00:00:00:00:00"
-    })
+    arp_row(dst, dev)
+        .is_some_and(|(flags, mac, _)| flags.contains('2') && mac != "00:00:00:00:00:00")
 }
 
 fn log_arp(dst: Ipv4Addr, dev: Option<&str>) {
