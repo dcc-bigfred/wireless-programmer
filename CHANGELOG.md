@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v0.3] — 2026-09-13
+
+RB23xx RailBOX decoder firmware over Soft-AP, capabilities-driven firmware jobs,
+WPA2-PSK join via `wpa_supplicant`, LongFred commissioning on `192.168.4.x`
+(ESP-IDF default, no hub LAN overlap), and Soft-AP addressing without a
+connected `/24` in `main`.
+
 ### Added
 
 - **RB23xx driver** — Soft-AP discovery (`RB2300_*` / `RB2310_*` / `RB2302_*`),
@@ -35,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Soft-AP `source/prefix` is assigned with `IFA_F_NOPREFIXROUTE`. The
   kernel does not install a connected subnet in `main`; only the existing
   policy `/32` to `host` leaves via the wireless interface.
+
+### Assets
+
+Static **linux/arm64** and **linux/amd64** musl binaries (`wireless-programmer-linux-*`).
+Hub operators can update without reflashing OS: `make hub-upload` to
+`/data/opt/wireless-programmer/` (see [bigfred-os](https://github.com/dcc-bigfred/bigfred-os)).
 
 ## [v0.2] — 2026-08-22
 
